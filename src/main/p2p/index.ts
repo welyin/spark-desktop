@@ -89,6 +89,37 @@ export class P2PNode {
     return null;
   }
 
+  /**
+   * 将消息帧 chunk 转换为 utf8 文本，兼容 Uint8Array / Buffer / Uint8ArrayList。
+   */
+  private decodeChunkToUtf8(chunk: any): string {
+    if (!chunk) {
+      return '';
+    }
+
+    if (typeof chunk === 'string') {
+      return chunk;
+    }
+
+    if (Buffer.isBuffer(chunk) || chunk instanceof Uint8Array) {
+      return Buffer.from(chunk).toString('utf8');
+    }
+
+    // Uint8ArrayList 兼容路径（subarray() 默认返回完整字节序列）。
+    if (typeof chunk.subarray === 'function') {
+      try {
+        const bytes = chunk.subarray();
+        if (Buffer.isBuffer(bytes) || bytes instanceof Uint8Array) {
+          return Buffer.from(bytes).toString('utf8');
+        }
+      } catch {
+        // ignore and continue to fallback
+      }
+    }
+
+    return '';
+  }
+
   /** 简单延时工具，用于重试节奏控制。 */
   private async delay(ms: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, ms));
@@ -224,19 +255,28 @@ export class P2PNode {
       throw new Error('stream source is not iterable');
     }
 
-    const nextPromise = iterator.next();
-    const firstChunk = await Promise.race([
-      nextPromise,
-      new Promise<IteratorResult<Uint8Array>>((_, reject) => {
-        setTimeout(() => reject(new Error('stream read timeout')), timeoutMs);
-      })
-    ]);
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const remaining = Math.max(1, deadline - Date.now());
+      const nextChunk = await Promise.race([
+        iterator.next(),
+        new Promise<IteratorResult<Uint8Array>>((_, reject) => {
+          setTimeout(() => reject(new Error('stream read timeout')), remaining);
+        })
+      ]);
 
-    if (!firstChunk || firstChunk.done || !firstChunk.value) {
-      return '';
+      if (!nextChunk || nextChunk.done) {
+        return '';
+      }
+
+      const text = this.decodeChunkToUtf8(nextChunk.value);
+      const sanitized = text.replace(/\u0000/g, '').trim();
+      if (sanitized.length > 0) {
+        return sanitized;
+      }
     }
 
-    return Buffer.from(firstChunk.value).toString('utf8');
+    throw new Error('stream read timeout');
   }
 
   // 向 libp2p stream 写入单次文本帧。
