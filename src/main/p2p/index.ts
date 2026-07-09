@@ -100,6 +100,10 @@ export class P2PNode {
         };
       }
 
+      if (typeof (globalThis as any).crypto === 'undefined') {
+        (globalThis as any).crypto = crypto.webcrypto;
+      }
+
       if (typeof (globalThis as any).WebSocket === 'undefined') {
         const wsModule = await runtimeImport('ws');
         (globalThis as any).WebSocket = wsModule.WebSocket ?? wsModule.default ?? wsModule;
