@@ -1,0 +1,19 @@
+/**
+ * org-share 直连协议名：用于成员同步时的 request-response 通道。
+ */
+export const DIRECT_ORG_SHARE_PROTOCOL = '/spark/org-share/1.0.0';
+
+/**
+ * 本地持久化 libp2p 私钥的数据库键，确保同设备 PeerId 稳定。
+ */
+export const P2P_IDENTITY_PRIVATE_KEY = 'p2p:identity:privateKey';
+
+/**
+ * 节点活跃度记录前缀：每个 peer 对应一条连接统计记录。
+ */
+export const P2P_PEER_RECORD_PREFIX = 'p2p:peer:record:';
+
+/**
+ * 组织元数据前缀：组织信息按 org:meta:<orgId> 存储。
+ */
+export const ORG_META_PREFIX = 'org:meta:';

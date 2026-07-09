@@ -1,0 +1,399 @@
+import crypto from 'crypto';
+import type { LevelDB } from '../db/base';
+import { getEvidenceHeadHash } from '../db/evidence';
+import { DIRECT_ORG_SHARE_PROTOCOL } from './constants';
+import { getOrCreateLibp2pPrivateKey } from './identity-store';
+import { PeerActivityStore } from './peer-activity-store';
+import { buildDialTargets, extractPeerId, normalizePeerIdList } from './peer-targets';
+import { OrgShareSyncService } from './org-share-sync';
+import { syncCurrentRootOrganizationsToPeer } from './organization-bootstrap-sync';
+import { createPubsubMessageHandler } from './pubsub-message-handler';
+import type { LocalP2PNodeInfo, P2PIdentityContext, P2PMessageBody, PeerNodeInfo } from './types';
+const runtimeImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
+
+/**
+ * P2P 节点编排器。
+ * 职责：
+ * - 管理 libp2p 生命周期（start/stop）
+ * - 管理本地签名与广播封装
+ * - 管理成员连接与活跃度记录
+ * - 协调 org-share 服务与 pubsub 消息处理器
+ */
+export class P2PNode {
+  private node: any | null = null;
+  private startPromise: Promise<void> | null = null;
+  private privateKey: crypto.KeyObject;
+  public publicKeyPem: string;
+  public nodeId: string = 'local-node';
+  private readonly peerActivity: PeerActivityStore;
+  private readonly orgShare: OrgShareSyncService;
+
+  constructor(
+    private readonly db: LevelDB,
+    private readonly identityContext?: P2PIdentityContext
+  ) {
+    this.peerActivity = new PeerActivityStore(this.db, extractPeerId);
+    this.orgShare = new OrgShareSyncService({
+      db: this.db,
+      identityContext: this.identityContext,
+      runtimeImport,
+      getNode: () => this.node,
+      connectPeer: async (nodeInfo) => this.connectPeer(nodeInfo),
+      broadcast: async (topic, body) => this.broadcast(topic, body),
+      getTopicSubscribers: (topic) => this.getTopicSubscribers(topic)
+    });
+
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+    this.privateKey = privateKey;
+    this.publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  }
+
+  private async getOrCreateLibp2pPrivateKey(): Promise<any> {
+    return getOrCreateLibp2pPrivateKey(this.db, runtimeImport);
+  }
+
+  private async rememberPeerNodeInfo(nodeInfo: PeerNodeInfo, result: 'success' | 'failure' | 'seen', error?: unknown): Promise<void> {
+    await this.peerActivity.rememberNodeInfo(nodeInfo, result, error);
+  }
+
+  private async markPeerConnected(peerId: string): Promise<void> {
+    await this.peerActivity.markConnected(peerId);
+  }
+
+  private async markPeerDisconnected(peerId: string): Promise<void> {
+    await this.peerActivity.markDisconnected(peerId);
+  }
+
+  /** 获取 topic 订阅者（标准化为字符串 peerId）。 */
+  private getTopicSubscribers(topic: string): string[] {
+    if (!this.node?.services?.pubsub) {
+      return [];
+    }
+
+    const pubsub = this.node.services.pubsub as any;
+    if (typeof pubsub.getSubscribers !== 'function') {
+      return [];
+    }
+
+    const subscribers = pubsub.getSubscribers(topic);
+    return Array.isArray(subscribers) ? normalizePeerIdList(subscribers) : [];
+  }
+
+  /** 获取当前连接中的远端 peer 列表。 */
+  private getConnectedPeers(): string[] {
+    if (!this.node) {
+      return [];
+    }
+
+    try {
+      const connections = typeof this.node.getConnections === 'function' ? this.node.getConnections() : [];
+      if (!Array.isArray(connections)) {
+        return [];
+      }
+      const peers = connections.map((connection: any) => connection?.remotePeer).filter(Boolean);
+      return Array.from(new Set(normalizePeerIdList(peers)));
+    } catch {
+      return [];
+    }
+  }
+
+  /** 登录后重连组织成员，优先连接活跃度高的节点。 */
+  async bootstrapOrganizationNetworkOnLogin(): Promise<{ attempted: number; connected: number }> {
+    if (!this.node) {
+      throw new Error('p2p node not started');
+    }
+
+    const currentRootId = await this.identityContext?.getCurrentRootId();
+    if (!currentRootId) {
+      return { attempted: 0, connected: 0 };
+    }
+
+    const candidates = await this.peerActivity.collectOrganizationPeerCandidates(currentRootId);
+    if (candidates.length === 0) {
+      return { attempted: 0, connected: 0 };
+    }
+
+    const sorted = await this.peerActivity.sortCandidatesByPriority(candidates);
+    let connected = 0;
+    for (const candidate of sorted) {
+      try {
+        await this.connectPeer(candidate);
+        await this.rememberPeerNodeInfo(candidate, 'success');
+        await syncCurrentRootOrganizationsToPeer({
+          db: this.db,
+          currentRootId,
+          targetPeer: candidate,
+          syncOrganizationToMember: (nodeInfo, targetRootId, organization) =>
+            this.orgShare.syncOrganizationToMember(nodeInfo, targetRootId, organization)
+        });
+        connected += 1;
+      } catch (error) {
+        await this.rememberPeerNodeInfo(candidate, 'failure', error);
+      }
+    }
+
+    console.log('[p2p] bootstrap organization network on login', {
+      attempted: sorted.length,
+      connected
+    });
+
+    return {
+      attempted: sorted.length,
+      connected
+    };
+  }
+
+  /**
+   * 启动 libp2p 节点。
+   *
+   * 启动阶段会：
+   * - 补齐 Node18/Electron 所需运行时 polyfill
+   * - 创建并启动 libp2p
+   * - 注册 peer connect/disconnect 事件
+   * - 注册 org-share 直连协议 handler
+   * - 订阅 spark-sync 并绑定消息处理器
+   */
+  async start() {
+    if (this.node) return;
+    if (this.startPromise) {
+      await this.startPromise;
+      return;
+    }
+
+    this.startPromise = (async () => {
+      if (typeof (Promise as any).withResolvers !== 'function') {
+        (Promise as any).withResolvers = () => {
+          let resolve: (value: unknown) => void;
+          let reject: (reason?: unknown) => void;
+          const promise = new Promise((res, rej) => {
+            resolve = res;
+            reject = rej;
+          });
+          return { promise, resolve: resolve!, reject: reject! };
+        };
+      }
+
+      if (typeof (globalThis as any).CustomEvent === 'undefined') {
+        (globalThis as any).CustomEvent = class CustomEvent extends Event {
+          detail: unknown;
+
+          constructor(type: string, params: { detail?: unknown } = {}) {
+            super(type);
+            this.detail = params.detail;
+          }
+        };
+      }
+
+      if (typeof (globalThis as any).crypto === 'undefined') {
+        (globalThis as any).crypto = crypto.webcrypto;
+      }
+
+      if (typeof (globalThis as any).WebSocket === 'undefined') {
+        const wsModule = await runtimeImport('ws');
+        (globalThis as any).WebSocket = wsModule.WebSocket ?? wsModule.default ?? wsModule;
+      }
+
+      const { createLibp2p } = await runtimeImport('libp2p');
+      const { webSockets } = await runtimeImport('@libp2p/websockets');
+      const { mplex } = await runtimeImport('@libp2p/mplex');
+      const { noise } = await runtimeImport('@chainsafe/libp2p-noise');
+      const { mdns } = await runtimeImport('@libp2p/mdns');
+      const { gossipsub } = await runtimeImport('@chainsafe/libp2p-gossipsub');
+      const { identify } = await runtimeImport('@libp2p/identify');
+      const libp2pPrivateKey = await this.getOrCreateLibp2pPrivateKey();
+
+      this.node = await createLibp2p({
+        privateKey: libp2pPrivateKey,
+        addresses: { listen: ['/ip4/0.0.0.0/tcp/0/ws'] },
+        transports: [webSockets()],
+        streamMuxers: [mplex()],
+        connectionEncrypters: [noise()],
+        peerDiscovery: [mdns()],
+        services: {
+          identify: identify(),
+          pubsub: gossipsub({
+            emitSelf: false,
+            allowPublishToZeroTopicPeers: true,
+            floodPublish: true
+          }) as any
+        }
+      });
+
+      await this.node.start();
+      this.nodeId = typeof this.node.peerId?.toString === 'function' ? this.node.peerId.toString() : String(this.node.peerId);
+
+      if (typeof this.node.addEventListener === 'function') {
+        this.node.addEventListener('peer:connect', async (event: any) => {
+          const peerId = event?.detail?.toString?.() ?? event?.detail?.remotePeer?.toString?.() ?? 'unknown';
+          console.log('[p2p] peer connected', peerId);
+          if (peerId !== 'unknown') {
+            await this.markPeerConnected(peerId);
+          }
+        });
+
+        this.node.addEventListener('peer:disconnect', async (event: any) => {
+          const peerId = event?.detail?.toString?.() ?? event?.detail?.remotePeer?.toString?.() ?? 'unknown';
+          console.log('[p2p] peer disconnected', peerId);
+          if (peerId !== 'unknown') {
+            await this.markPeerDisconnected(peerId);
+          }
+        });
+      }
+
+      if (typeof this.node.handle === 'function') {
+        this.node.handle(DIRECT_ORG_SHARE_PROTOCOL, async (incoming: any) => {
+          await this.orgShare.handleDirectIncoming(incoming);
+        });
+        console.log('[p2p] direct org-share protocol registered', DIRECT_ORG_SHARE_PROTOCOL);
+      }
+
+      const syncTopic = 'spark-sync';
+      await this.node.services.pubsub.subscribe(syncTopic);
+      console.log('[p2p] subscribed topic', syncTopic);
+
+      const handleMessage = createPubsubMessageHandler({
+        db: this.db,
+        verifySignature: (envelope, pubKeyPem, signatureB64) => this.verifySignature(envelope, pubKeyPem, signatureB64),
+        orgShare: this.orgShare,
+        broadcast: async (topic, body) => this.broadcast(topic, body)
+      });
+
+      if (typeof this.node.services.pubsub.on === 'function') {
+        this.node.services.pubsub.on('message', handleMessage);
+        console.log('[p2p] pubsub message handler bound via on(message)');
+      } else if (typeof this.node.services.pubsub.addEventListener === 'function') {
+        this.node.services.pubsub.addEventListener('message', handleMessage);
+        console.log('[p2p] pubsub message handler bound via addEventListener(message)');
+      } else {
+        console.warn('[p2p] pubsub message handler binding failed: no supported API');
+      }
+
+      console.log('[p2p] node started, peerId=', this.nodeId);
+    })();
+
+    try {
+      await this.startPromise;
+    } finally {
+      this.startPromise = null;
+    }
+  }
+
+  /** 停止节点并清理引用。 */
+  async stop() {
+    if (this.startPromise) {
+      await this.startPromise;
+    }
+    if (!this.node) return;
+    await this.node.stop();
+    this.node = null;
+  }
+
+  /** 节点是否已启动。 */
+  isStarted() {
+    return !!this.node;
+  }
+
+  /**
+   * 广播业务消息。
+   * 自动填充 version/timestamp/evidenceHeadHash 并附加签名信息。
+   */
+  async broadcast(topic: string, body: Omit<P2PMessageBody, 'timestamp' | 'pubKey' | 'signature' | 'version'> & { domain: string }) {
+    if (!this.node) throw new Error('p2p node not started');
+    const envelope: P2PMessageBody = {
+      version: '1',
+      ...body,
+      evidenceHeadHash: await getEvidenceHeadHash(this.db),
+      timestamp: Date.now()
+    };
+
+    envelope.pubKey = this.publicKeyPem;
+    envelope.signature = this.signEnvelope(envelope);
+
+    const payload = Buffer.from(JSON.stringify(envelope));
+    await this.node.services.pubsub.publish(topic, payload);
+  }
+
+  /** 按候选地址列表拨号连接目标成员。 */
+  async connectPeer(nodeInfo: PeerNodeInfo): Promise<void> {
+    if (!this.node) throw new Error('p2p node not started');
+
+    const { multiaddr } = await runtimeImport('@multiformats/multiaddr');
+    const dialTargets = buildDialTargets(nodeInfo);
+
+    let lastError: unknown = null;
+    for (const target of dialTargets) {
+      try {
+        const targetMultiaddr = multiaddr(target);
+        await this.node.dial(targetMultiaddr);
+        console.log('[p2p] connected to peer via', target);
+        await this.rememberPeerNodeInfo(nodeInfo, 'success');
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    await this.rememberPeerNodeInfo(nodeInfo, 'failure', lastError);
+    throw new Error(`Failed to connect peer by provided addresses: ${String(lastError)}`);
+  }
+
+  /** 对外组织同步入口（委托给 orgShare 服务）。 */
+  async syncOrganizationToMember(nodeInfo: PeerNodeInfo, targetRootId: string, organization: any): Promise<void> {
+    await this.orgShare.syncOrganizationToMember(nodeInfo, targetRootId, organization);
+  }
+
+  /** 获取用于 UI 诊断展示的节点状态快照。 */
+  getLocalNodeInfo(): LocalP2PNodeInfo {
+    if (!this.node) {
+      return {
+        initialized: true,
+        started: false,
+        peerId: null,
+        addresses: [],
+        connectedPeers: [],
+        sparkSyncSubscribers: []
+      };
+    }
+
+    const rawMultiaddrs = typeof this.node.getMultiaddrs === 'function' ? this.node.getMultiaddrs() : [];
+    const addresses = Array.isArray(rawMultiaddrs)
+      ? rawMultiaddrs.map((addr: any) => {
+          if (!addr) return '';
+          if (typeof addr === 'string') return addr;
+          if (typeof addr.toString === 'function') return addr.toString();
+          return '';
+        }).filter((value: string) => value.length > 0)
+      : [];
+
+    return {
+      initialized: true,
+      started: true,
+      peerId: this.nodeId,
+      addresses,
+      connectedPeers: this.getConnectedPeers(),
+      sparkSyncSubscribers: this.getTopicSubscribers('spark-sync')
+    };
+  }
+
+  /** 生成消息签名。 */
+  private signEnvelope(envelope: P2PMessageBody) {
+    const copy = { ...envelope, signature: undefined } as any;
+    const str = JSON.stringify(copy);
+    const sig = crypto.sign(null, Buffer.from(str), this.privateKey);
+    return sig.toString('base64');
+  }
+
+  /** 校验消息签名。 */
+  private verifySignature(envelope: P2PMessageBody, pubKeyPem: string, signatureB64: string) {
+    try {
+      const copy = { ...envelope, signature: undefined } as any;
+      const str = JSON.stringify(copy);
+      const sig = Buffer.from(signatureB64, 'base64');
+      const pubKey = crypto.createPublicKey(pubKeyPem);
+      return crypto.verify(null, Buffer.from(str), pubKey, sig);
+    } catch (err) {
+      console.error('[p2p] verifySignature error', err);
+      return false;
+    }
+  }
+}

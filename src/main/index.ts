@@ -1,9 +1,9 @@
 import { app, BrowserWindow, ipcMain, IpcMainInvokeEvent } from 'electron';
 import path from 'path';
 import { levelDB, ensureSystemDomainInitialized, parseDomainFromKey, verifyAccess, getEvidenceHeadHash, verifyEvidenceChain, getEvidenceHeight } from './db';
-import { initP2PNode, getP2PNode, isP2PInitialized } from './p2p';
+import { initP2PNode, getP2PNode, isP2PInitialized } from './p2p/index';
 import { registerDomain, unregisterDomain, getDomain, isSystemDomain, isValidPluginDomain } from './domain-registry';
-import { OrganizationService } from './organization';
+import { OrganizationService } from './organization/index';
 import { rootIdentityManager } from './identity';
 
 /**

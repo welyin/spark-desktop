@@ -1,63 +1,8 @@
 import { randomBytes } from 'crypto';
-
-export type OrganizationRole = 'admin' | 'member';
-
-export type OrganizationNodeInfo = {
-	peerId?: string;
-	addresses: string[];
-};
-
-export type OrganizationMember = {
-	rootId: string;
-	role: OrganizationRole;
-	joinedAt: number;
-	addedBy: string;
-	nodeInfo?: OrganizationNodeInfo;
-};
-
-export type OrganizationRecord = {
-	orgId: string;
-	name: string;
-	description: string;
-	createdAt: number;
-	createdBy: string;
-	updatedAt: number;
-	members: OrganizationMember[];
-};
-
-export type OrganizationView = OrganizationRecord & {
-	currentUserRole: OrganizationRole | null;
-	isCurrentUserAdmin: boolean;
-	memberCount: number;
-	adminCount: number;
-};
-
-type OrganizationDb = {
-	open: () => Promise<void>;
-	get: (key: string) => Promise<string | null>;
-	put: (key: string, value: string) => Promise<void>;
-	del: (key: string) => Promise<void>;
-	queryRange: (options: { prefix: string; start?: string; end?: string }) => Promise<Array<{ key: string; value: string }>>;
-};
-
-type RootIdentityContext = {
-	getCurrentRootId: () => Promise<string | null>;
-};
-
-type OrganizationSyncContext = {
-	syncOrganizationToMember?: (payload: {
-		organization: OrganizationRecord;
-		member: OrganizationMember;
-		targetRootId: string;
-	}) => Promise<void>;
-};
-
-type CreateOrganizationInput = {
-	name: string;
-	description?: string;
-};
-
-const ORG_META_PREFIX = 'org:meta:';
+import { ORG_META_PREFIX } from './constants';
+import { appendOrganizationTransaction, listOrganizationTransactions } from './transaction-store';
+import { buildOrganizationSyncVersions, pickSyncSectionsByPriority } from './sync';
+import type { CreateOrganizationInput, OrganizationDb, OrganizationMember, OrganizationNodeInfo, OrganizationRecord, OrganizationSyncContext, OrganizationTransactionRecord, OrganizationView, RootIdentityContext, OrganizationRole } from './types';
 
 function organizationKey(orgId: string): string {
 	return `${ORG_META_PREFIX}${orgId}`;
@@ -154,6 +99,18 @@ export class OrganizationService {
 				}
 			]
 		};
+		const transaction = await appendOrganizationTransaction(this.db, {
+			orgId: record.orgId,
+			type: 'create',
+			actorRootId: currentRootId,
+			summary: `创建组织 ${name}`,
+			payload: { name, description }
+		});
+		record.sync = {
+			versions: buildOrganizationSyncVersions(record, transaction.createdAt),
+			sections: pickSyncSectionsByPriority(record),
+			lastSyncedAt: 0
+		};
 
 		await this.db.open();
 		await this.db.put(organizationKey(record.orgId), JSON.stringify(record));
@@ -164,6 +121,13 @@ export class OrganizationService {
 		const currentRootId = await this.requireCurrentRootId();
 		const record = await this.requireOrganization(orgId);
 		this.requireAdmin(record, currentRootId);
+		await appendOrganizationTransaction(this.db, {
+			orgId,
+			type: 'delete',
+			actorRootId: currentRootId,
+			summary: `删除组织 ${record.name}`,
+			payload: { orgId }
+		});
 
 		await this.db.open();
 		await this.db.del(organizationKey(orgId));
@@ -190,6 +154,19 @@ export class OrganizationService {
 				members: record.members.map((member) =>
 					member.rootId === normalizedMemberRootId ? updatedMember : member
 				)
+			};
+			const transaction = await appendOrganizationTransaction(this.db, {
+				orgId,
+				type: 'member-update',
+				actorRootId: currentRootId,
+				targetRootId: normalizedMemberRootId,
+				summary: `更新成员节点信息 ${normalizedMemberRootId}`,
+				payload: { nodeInfo: normalizedNodeInfo }
+			});
+			updatedRecord.sync = {
+				versions: buildOrganizationSyncVersions(updatedRecord, transaction.createdAt),
+				sections: pickSyncSectionsByPriority(updatedRecord),
+				lastSyncedAt: record.sync?.lastSyncedAt ?? 0
 			};
 
 			if (!this.syncContext.syncOrganizationToMember) {
@@ -224,6 +201,19 @@ export class OrganizationService {
 			...record,
 			updatedAt: Date.now(),
 			members: [...record.members, newMember]
+		};
+		const transaction = await appendOrganizationTransaction(this.db, {
+			orgId,
+			type: 'member-add',
+			actorRootId: currentRootId,
+			targetRootId: normalizedMemberRootId,
+			summary: `添加成员 ${normalizedMemberRootId}`,
+			payload: { nodeInfo: normalizedNodeInfo }
+		});
+		updatedRecord.sync = {
+			versions: buildOrganizationSyncVersions(updatedRecord, transaction.createdAt),
+			sections: pickSyncSectionsByPriority(updatedRecord),
+			lastSyncedAt: record.sync?.lastSyncedAt ?? 0
 		};
 
 		if (!this.syncContext.syncOrganizationToMember) {
@@ -267,10 +257,27 @@ export class OrganizationService {
 
 		record.members.splice(memberIndex, 1);
 		record.updatedAt = Date.now();
+		const transaction = await appendOrganizationTransaction(this.db, {
+			orgId,
+			type: 'member-remove',
+			actorRootId: currentRootId,
+			targetRootId: normalizedMemberRootId,
+			summary: `移除成员 ${normalizedMemberRootId}`,
+			payload: { removedRole: member.role }
+		});
+		record.sync = {
+			versions: buildOrganizationSyncVersions(record, transaction.createdAt),
+			sections: pickSyncSectionsByPriority(record),
+			lastSyncedAt: record.sync?.lastSyncedAt ?? 0
+		};
 
 		await this.db.open();
 		await this.db.put(organizationKey(orgId), JSON.stringify(record));
 		return this.toView(record, currentRootId);
+	}
+
+	async listTransactions(orgId: string, limit = 20): Promise<OrganizationTransactionRecord[]> {
+		return await listOrganizationTransactions(this.db, orgId, limit);
 	}
 
 	private async readAllOrganizations(): Promise<OrganizationRecord[]> {
