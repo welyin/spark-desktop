@@ -100,6 +100,11 @@ export class P2PNode {
         };
       }
 
+      if (typeof (globalThis as any).WebSocket === 'undefined') {
+        const wsModule = await runtimeImport('ws');
+        (globalThis as any).WebSocket = wsModule.WebSocket ?? wsModule.default ?? wsModule;
+      }
+
       // 延迟加载 libp2p 新栈（ESM），避免主进程启动阶段强耦合。
       const { createLibp2p } = await runtimeImport('libp2p');
       const { webSockets } = await runtimeImport('@libp2p/websockets');
