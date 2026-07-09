@@ -58,6 +58,8 @@ export class P2PNode {
   private privateKey: crypto.KeyObject;
   public publicKeyPem: string;
   public nodeId: string = 'local-node';
+  private orgShareAckWaiters = new Map<string, () => void>();
+  private orgShareAckCache = new Set<string>();
 
   private async delay(ms: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, ms));
@@ -126,6 +128,35 @@ export class P2PNode {
       topic,
       targetPeerId,
       subscribers: this.getTopicSubscribers(topic)
+    });
+  }
+
+  private markOrgShareAck(syncId: string): void {
+    const done = this.orgShareAckWaiters.get(syncId);
+    if (done) {
+      done();
+      return;
+    }
+    this.orgShareAckCache.add(syncId);
+  }
+
+  private async waitForOrgShareAck(syncId: string, timeoutMs: number): Promise<boolean> {
+    if (this.orgShareAckCache.has(syncId)) {
+      this.orgShareAckCache.delete(syncId);
+      return true;
+    }
+
+    return await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        this.orgShareAckWaiters.delete(syncId);
+        resolve(false);
+      }, timeoutMs);
+
+      this.orgShareAckWaiters.set(syncId, () => {
+        clearTimeout(timer);
+        this.orgShareAckWaiters.delete(syncId);
+        resolve(true);
+      });
     });
   }
 
@@ -284,6 +315,7 @@ export class P2PNode {
         if (parsed.type === 'org-share') {
           const targetRootId = parsed.payload?.targetRootId;
           const organization = parsed.payload?.organization;
+          const syncId = parsed.payload?.syncId;
           if (!targetRootId || !organization?.orgId) {
             console.warn('[p2p][org-share] invalid payload, skip');
             return;
@@ -326,6 +358,37 @@ export class P2PNode {
             orgId: organization.orgId,
             persisted: !!persisted,
             memberCount: members.length
+          });
+
+          if (syncId) {
+            await this.broadcast('spark-sync', {
+              type: 'org-share-ack',
+              domain: 'system',
+              payload: {
+                syncId,
+                orgId: organization.orgId,
+                targetRootId,
+                receiverRootId: currentRootId
+              }
+            });
+            console.log('[p2p][org-share] ack sent', {
+              syncId,
+              orgId: organization.orgId,
+              receiverRootId: currentRootId
+            });
+          }
+        }
+
+        if (parsed.type === 'org-share-ack') {
+          const syncId = parsed.payload?.syncId;
+          if (!syncId) {
+            return;
+          }
+          this.markOrgShareAck(syncId);
+          console.log('[p2p][org-share] ack received', {
+            syncId,
+            orgId: parsed.payload?.orgId,
+            receiverRootId: parsed.payload?.receiverRootId
           });
         }
 
@@ -430,9 +493,11 @@ export class P2PNode {
   async syncOrganizationToMember(nodeInfo: PeerNodeInfo, targetRootId: string, organization: any): Promise<void> {
     if (!this.node) throw new Error('p2p node not started');
     const syncTopic = 'spark-sync';
+    const syncId = crypto.randomBytes(12).toString('hex');
     const targetPeerId = this.extractPeerId(nodeInfo);
     console.log('[p2p][org-share] start sync to member', {
       orgId: organization?.orgId,
+      syncId,
       targetRootId,
       peerId: targetPeerId,
       addresses: nodeInfo.addresses
@@ -451,6 +516,7 @@ export class P2PNode {
       domain: 'system',
       payload: {
         targetRootId,
+        syncId,
         organization,
         nodeInfo: {
           peerId: nodeInfo.peerId,
@@ -460,7 +526,7 @@ export class P2PNode {
     } as const;
 
     // gossipsub 在刚建立连接后可能存在短暂传播窗口，增加小次数重试提升送达率。
-    const retryIntervalsMs = [0, 250, 750];
+    const retryIntervalsMs = [0, 400, 1000, 2000, 3500];
     for (let i = 0; i < retryIntervalsMs.length; i += 1) {
       const waitMs = retryIntervalsMs[i];
       if (waitMs > 0) {
@@ -469,12 +535,33 @@ export class P2PNode {
       await this.broadcast(syncTopic, payload);
       console.log('[p2p][org-share] published', {
         orgId: organization?.orgId,
+        syncId,
         targetRootId,
         attempt: i + 1,
         total: retryIntervalsMs.length,
         waitMs
       });
+
+      const acked = await this.waitForOrgShareAck(syncId, 1500);
+      if (acked) {
+        console.log('[p2p][org-share] delivery confirmed by ack', {
+          syncId,
+          orgId: organization?.orgId,
+          targetRootId,
+          attempt: i + 1
+        });
+        return;
+      }
+
+      console.warn('[p2p][org-share] ack timeout for attempt', {
+        syncId,
+        orgId: organization?.orgId,
+        targetRootId,
+        attempt: i + 1
+      });
     }
+
+    throw new Error(`Organization sync ack timeout: orgId=${organization?.orgId}, targetRootId=${targetRootId}, syncId=${syncId}`);
   }
 
   getLocalNodeInfo(): LocalP2PNodeInfo {
