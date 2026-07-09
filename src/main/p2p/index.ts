@@ -51,6 +51,23 @@ type P2PIdentityContext = {
 const runtimeImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
 // 点对点组织同步协议：用于绕过 pubsub mesh 时序不稳定，走 request-response 直连确认。
 const DIRECT_ORG_SHARE_PROTOCOL = '/spark/org-share/1.0.0';
+const P2P_IDENTITY_PRIVATE_KEY = 'p2p:identity:privateKey';
+const P2P_PEER_RECORD_PREFIX = 'p2p:peer:record:';
+const ORG_META_PREFIX = 'org:meta:';
+
+type PeerActivityRecord = {
+  peerId: string;
+  addresses: string[];
+  firstSeenAt: number;
+  lastSeenAt: number;
+  lastConnectedAt: number | null;
+  lastDisconnectedAt: number | null;
+  successCount: number;
+  failureCount: number;
+  cumulativeConnectedMs: number;
+  currentSessionConnectedAt?: number;
+  lastError?: string;
+};
 
 let p2pNodeInstance: P2PNode | null = null;
 
@@ -64,6 +81,7 @@ export class P2PNode {
   private orgShareAckWaiters = new Map<string, () => void>();
   // 处理 ACK 先到、waiter 后注册的竞态缓存。
   private orgShareAckCache = new Set<string>();
+  private peerActivityCache = new Map<string, PeerActivityRecord>();
 
   /**
    * 兼容不同 libp2p 版本/中间件的入参形态，解析出可读写 stream。
@@ -87,6 +105,263 @@ export class P2PNode {
     }
 
     return null;
+  }
+
+  /** 持久化 libp2p 私钥，确保同设备重启后 PeerId 稳定。 */
+  private async getOrCreateLibp2pPrivateKey(): Promise<any> {
+    const { generateKeyPair, privateKeyFromProtobuf, privateKeyToProtobuf } = await runtimeImport('@libp2p/crypto/keys');
+    const encoded = await this.db.get(P2P_IDENTITY_PRIVATE_KEY);
+    if (encoded) {
+      try {
+        return privateKeyFromProtobuf(Buffer.from(encoded, 'base64'));
+      } catch (error) {
+        console.warn('[p2p] failed to load persisted private key, regenerate', error);
+      }
+    }
+
+    const privateKey = await generateKeyPair('Ed25519');
+    const raw = privateKeyToProtobuf(privateKey);
+    await this.db.put(P2P_IDENTITY_PRIVATE_KEY, Buffer.from(raw).toString('base64'));
+    return privateKey;
+  }
+
+  /** 生成 peer activity 在 LevelDB 中的键名。 */
+  private peerRecordKey(peerId: string): string {
+    return `${P2P_PEER_RECORD_PREFIX}${peerId}`;
+  }
+
+  /** 读取并缓存指定 peer 的活跃记录。 */
+  private async getPeerRecord(peerId: string): Promise<PeerActivityRecord | null> {
+    if (!peerId) {
+      return null;
+    }
+    const cached = this.peerActivityCache.get(peerId);
+    if (cached) {
+      return { ...cached };
+    }
+
+    const raw = await this.db.get(this.peerRecordKey(peerId));
+    if (!raw) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as PeerActivityRecord;
+      this.peerActivityCache.set(peerId, parsed);
+      return { ...parsed };
+    } catch {
+      return null;
+    }
+  }
+
+  /** 写入 peer 活跃记录到缓存与数据库。 */
+  private async savePeerRecord(record: PeerActivityRecord): Promise<void> {
+    this.peerActivityCache.set(record.peerId, record);
+    await this.db.put(this.peerRecordKey(record.peerId), JSON.stringify(record));
+  }
+
+  /** 根据节点信息更新 peer 活跃记录，并可附带成功/失败结果。 */
+  private async rememberPeerNodeInfo(nodeInfo: PeerNodeInfo, result: 'success' | 'failure' | 'seen', error?: unknown): Promise<void> {
+    const peerId = this.extractPeerId(nodeInfo);
+    if (!peerId) {
+      return;
+    }
+
+    const now = Date.now();
+    const existing = await this.getPeerRecord(peerId);
+    const next: PeerActivityRecord = existing ?? {
+      peerId,
+      addresses: [],
+      firstSeenAt: now,
+      lastSeenAt: now,
+      lastConnectedAt: null,
+      lastDisconnectedAt: null,
+      successCount: 0,
+      failureCount: 0,
+      cumulativeConnectedMs: 0
+    };
+
+    const mergedAddresses = Array.from(new Set([
+      ...next.addresses,
+      ...nodeInfo.addresses.map((item) => item.trim()).filter((item) => item.length > 0)
+    ]));
+    next.addresses = mergedAddresses;
+    next.lastSeenAt = now;
+
+    if (result === 'success') {
+      next.successCount += 1;
+      next.lastConnectedAt = now;
+    }
+    if (result === 'failure') {
+      next.failureCount += 1;
+      next.lastError = error instanceof Error ? error.message : String(error);
+    }
+
+    await this.savePeerRecord(next);
+  }
+
+  /** 连接事件到来时更新活跃记录（在线时长起点）。 */
+  private async markPeerConnected(peerId: string): Promise<void> {
+    const now = Date.now();
+    const existing = await this.getPeerRecord(peerId);
+    const next: PeerActivityRecord = existing ?? {
+      peerId,
+      addresses: [],
+      firstSeenAt: now,
+      lastSeenAt: now,
+      lastConnectedAt: null,
+      lastDisconnectedAt: null,
+      successCount: 0,
+      failureCount: 0,
+      cumulativeConnectedMs: 0
+    };
+
+    next.lastSeenAt = now;
+    next.lastConnectedAt = now;
+    next.currentSessionConnectedAt = next.currentSessionConnectedAt ?? now;
+    await this.savePeerRecord(next);
+  }
+
+  /** 断开事件到来时累计在线时长。 */
+  private async markPeerDisconnected(peerId: string): Promise<void> {
+    const now = Date.now();
+    const existing = await this.getPeerRecord(peerId);
+    if (!existing) {
+      return;
+    }
+
+    if (existing.currentSessionConnectedAt) {
+      existing.cumulativeConnectedMs += Math.max(0, now - existing.currentSessionConnectedAt);
+      delete existing.currentSessionConnectedAt;
+    }
+    existing.lastSeenAt = now;
+    existing.lastDisconnectedAt = now;
+    await this.savePeerRecord(existing);
+  }
+
+  /** 读取所有 peer 活跃记录。 */
+  private async listPeerRecords(): Promise<PeerActivityRecord[]> {
+    const rows = await this.db.queryRange({
+      prefix: P2P_PEER_RECORD_PREFIX,
+      start: P2P_PEER_RECORD_PREFIX,
+      end: `${P2P_PEER_RECORD_PREFIX}\xFF`
+    });
+
+    const records: PeerActivityRecord[] = [];
+    for (const row of rows) {
+      try {
+        records.push(JSON.parse(row.value) as PeerActivityRecord);
+      } catch {
+        // ignore invalid row
+      }
+    }
+    return records;
+  }
+
+  /** 活跃度得分：在线累计越久、最近越活跃优先级越高。 */
+  private computePeerPriority(record: PeerActivityRecord): number {
+    const recencyBoost = Math.max(0, Date.now() - record.lastSeenAt);
+    return (record.cumulativeConnectedMs + record.successCount * 60_000) - (record.failureCount * 30_000) - recencyBoost;
+  }
+
+  /** 从组织元数据提取应尝试连接的节点候选（仅当前用户所属组织）。 */
+  private async collectOrganizationPeerCandidates(currentRootId: string): Promise<PeerNodeInfo[]> {
+    const rows = await this.db.queryRange({
+      prefix: ORG_META_PREFIX,
+      start: ORG_META_PREFIX,
+      end: `${ORG_META_PREFIX}\xFF`
+    });
+
+    const byPeer = new Map<string, PeerNodeInfo>();
+    const byAddress = new Map<string, PeerNodeInfo>();
+
+    for (const row of rows) {
+      try {
+        const org = JSON.parse(row.value) as any;
+        const members = Array.isArray(org?.members) ? org.members : [];
+        const containsCurrent = members.some((member: any) => member?.rootId === currentRootId);
+        if (!containsCurrent) {
+          continue;
+        }
+
+        for (const member of members) {
+          if (!member?.nodeInfo || member.rootId === currentRootId) {
+            continue;
+          }
+          const candidate: PeerNodeInfo = {
+            peerId: member.nodeInfo.peerId,
+            addresses: Array.isArray(member.nodeInfo.addresses) ? member.nodeInfo.addresses : []
+          };
+          const candidatePeerId = this.extractPeerId(candidate);
+          if (candidatePeerId) {
+            const existing = byPeer.get(candidatePeerId);
+            byPeer.set(candidatePeerId, {
+              peerId: candidatePeerId,
+              addresses: Array.from(new Set([...(existing?.addresses ?? []), ...candidate.addresses]))
+            });
+            continue;
+          }
+
+          const key = candidate.addresses.join('|');
+          if (key.length > 0) {
+            byAddress.set(key, candidate);
+          }
+        }
+      } catch {
+        // ignore invalid org record
+      }
+    }
+
+    return [...byPeer.values(), ...byAddress.values()];
+  }
+
+  /** 登录后按活跃度重连组织节点，提升后续同步稳定性。 */
+  async bootstrapOrganizationNetworkOnLogin(): Promise<{ attempted: number; connected: number }> {
+    if (!this.node) {
+      throw new Error('p2p node not started');
+    }
+
+    const currentRootId = await this.identityContext?.getCurrentRootId();
+    if (!currentRootId) {
+      return { attempted: 0, connected: 0 };
+    }
+
+    const candidates = await this.collectOrganizationPeerCandidates(currentRootId);
+    if (candidates.length === 0) {
+      return { attempted: 0, connected: 0 };
+    }
+
+    const records = await this.listPeerRecords();
+    const scoreByPeerId = new Map(records.map((item) => [item.peerId, this.computePeerPriority(item)]));
+
+    const sorted = [...candidates].sort((a, b) => {
+      const aPeer = this.extractPeerId(a);
+      const bPeer = this.extractPeerId(b);
+      const aScore = aPeer ? (scoreByPeerId.get(aPeer) ?? Number.MIN_SAFE_INTEGER) : Number.MIN_SAFE_INTEGER;
+      const bScore = bPeer ? (scoreByPeerId.get(bPeer) ?? Number.MIN_SAFE_INTEGER) : Number.MIN_SAFE_INTEGER;
+      return bScore - aScore;
+    });
+
+    let connected = 0;
+    for (const candidate of sorted) {
+      try {
+        await this.connectPeer(candidate);
+        await this.rememberPeerNodeInfo(candidate, 'success');
+        connected += 1;
+      } catch (error) {
+        await this.rememberPeerNodeInfo(candidate, 'failure', error);
+      }
+    }
+
+    console.log('[p2p] bootstrap organization network on login', {
+      attempted: sorted.length,
+      connected
+    });
+
+    return {
+      attempted: sorted.length,
+      connected
+    };
   }
 
   /**
@@ -521,8 +796,10 @@ export class P2PNode {
       const { mdns } = await runtimeImport('@libp2p/mdns');
       const { gossipsub } = await runtimeImport('@chainsafe/libp2p-gossipsub');
       const { identify } = await runtimeImport('@libp2p/identify');
+      const libp2pPrivateKey = await this.getOrCreateLibp2pPrivateKey();
 
       this.node = await createLibp2p({
+        privateKey: libp2pPrivateKey,
         addresses: { listen: ['/ip4/0.0.0.0/tcp/0/ws'] },
         transports: [webSockets()],
         streamMuxers: [mplex()],
@@ -545,13 +822,19 @@ export class P2PNode {
       this.nodeId = typeof this.node.peerId?.toString === 'function' ? this.node.peerId.toString() : String(this.node.peerId);
 
       if (typeof this.node.addEventListener === 'function') {
-        this.node.addEventListener('peer:connect', (event: any) => {
+        this.node.addEventListener('peer:connect', async (event: any) => {
           const peerId = event?.detail?.toString?.() ?? event?.detail?.remotePeer?.toString?.() ?? 'unknown';
           console.log('[p2p] peer connected', peerId);
+          if (peerId !== 'unknown') {
+            await this.markPeerConnected(peerId);
+          }
         });
-        this.node.addEventListener('peer:disconnect', (event: any) => {
+        this.node.addEventListener('peer:disconnect', async (event: any) => {
           const peerId = event?.detail?.toString?.() ?? event?.detail?.remotePeer?.toString?.() ?? 'unknown';
           console.log('[p2p] peer disconnected', peerId);
+          if (peerId !== 'unknown') {
+            await this.markPeerDisconnected(peerId);
+          }
         });
       }
 
@@ -793,11 +1076,14 @@ export class P2PNode {
         const targetMultiaddr = multiaddr(target);
         await this.node.dial(targetMultiaddr);
         console.log('[p2p] connected to peer via', target);
+        await this.rememberPeerNodeInfo(nodeInfo, 'success');
         return;
       } catch (error) {
         lastError = error;
       }
     }
+
+    await this.rememberPeerNodeInfo(nodeInfo, 'failure', lastError);
 
     throw new Error(`Failed to connect peer by provided addresses: ${String(lastError)}`);
   }

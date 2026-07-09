@@ -253,7 +253,18 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('root-unlock', async (event, password: string) => {
     requireSystemDomain(event);
-    return await rootIdentityManager.unlock(password);
+    const result = await rootIdentityManager.unlock(password);
+
+    try {
+      await ensureCoreServicesStarted();
+      if (isP2PInitialized() && getP2PNode().isStarted()) {
+        await getP2PNode().bootstrapOrganizationNetworkOnLogin();
+      }
+    } catch (error) {
+      console.warn('[main] failed to bootstrap organization peers after login', error);
+    }
+
+    return result;
   });
 
   ipcMain.handle('root-lock', (event) => {
