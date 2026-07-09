@@ -531,6 +531,7 @@ button:disabled {
   text-align: left;
   background: rgba(15, 23, 42, 0.04);
   border: 1px solid transparent;
+  color:#0f172a;
 }
 
 .org-item.active {
