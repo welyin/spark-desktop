@@ -49,6 +49,7 @@ type P2PIdentityContext = {
 };
 
 const runtimeImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
+const DIRECT_ORG_SHARE_PROTOCOL = '/spark/org-share/1.0.0';
 
 let p2pNodeInstance: P2PNode | null = null;
 
@@ -90,6 +91,22 @@ export class P2PNode {
     }
 
     return null;
+  }
+
+  private buildDialTargets(nodeInfo: PeerNodeInfo): string[] {
+    const addresses = nodeInfo.addresses.map((item) => item.trim()).filter((item) => item.length > 0);
+    if (addresses.length === 0) {
+      throw new Error('Member node addresses are required for p2p connect');
+    }
+
+    const targetPeerId = this.extractPeerId(nodeInfo);
+    return addresses.flatMap((address) => {
+      const targets = [address];
+      if (targetPeerId && !address.includes('/p2p/')) {
+        targets.push(`${address.replace(/\/$/, '')}/p2p/${targetPeerId}`);
+      }
+      return targets;
+    });
   }
 
   private getTopicSubscribers(topic: string): string[] {
@@ -158,6 +175,130 @@ export class P2PNode {
         resolve(true);
       });
     });
+  }
+
+  private async readStreamAsString(stream: any, timeoutMs = 3000): Promise<string> {
+    const readPromise = (async () => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream.source) {
+        chunks.push(Buffer.from(chunk));
+      }
+      return Buffer.concat(chunks).toString('utf8');
+    })();
+
+    return await Promise.race([
+      readPromise,
+      new Promise<string>((_, reject) => {
+        setTimeout(() => reject(new Error('stream read timeout')), timeoutMs);
+      })
+    ]);
+  }
+
+  private async writeStringToStream(stream: any, text: string): Promise<void> {
+    await stream.sink((async function* () {
+      yield Buffer.from(text, 'utf8');
+    })());
+  }
+
+  private async applyIncomingOrgShare(payload: any, source: 'pubsub' | 'direct'): Promise<{
+    accepted: boolean;
+    ackPayload?: {
+      syncId?: string;
+      orgId: string;
+      targetRootId: string;
+      receiverRootId: string;
+    };
+  }> {
+    const targetRootId = payload?.targetRootId;
+    const organization = payload?.organization;
+    const syncId = payload?.syncId;
+    if (!targetRootId || !organization?.orgId) {
+      console.warn(`[p2p][org-share][${source}] invalid payload, skip`);
+      return { accepted: false };
+    }
+
+    console.log(`[p2p][org-share][${source}] received candidate`, {
+      orgId: organization.orgId,
+      syncId,
+      targetRootId,
+      members: Array.isArray(organization.members) ? organization.members.length : 0
+    });
+
+    if (!this.identityContext) {
+      console.warn(`[p2p][org-share][${source}] missing identity context, skip`);
+      return { accepted: false };
+    }
+
+    const currentRootId = await this.identityContext.getCurrentRootId();
+    if (!currentRootId || currentRootId !== targetRootId) {
+      console.log(`[p2p][org-share][${source}] target mismatch, skip`, {
+        currentRootId,
+        targetRootId
+      });
+      return { accepted: false };
+    }
+
+    const members = Array.isArray(organization.members) ? organization.members : [];
+    const containsCurrent = members.some((member: any) => member?.rootId === currentRootId);
+    if (!containsCurrent) {
+      console.warn(`[p2p][org-share][${source}] current root not found in members, skip`, {
+        currentRootId,
+        orgId: organization.orgId
+      });
+      return { accepted: false };
+    }
+
+    await this.db.open();
+    await this.db.put(`org:meta:${organization.orgId}`, JSON.stringify(organization));
+    const persisted = await this.db.get(`org:meta:${organization.orgId}`);
+    console.log(`[p2p][org-share][${source}] organization synced from peer`, {
+      orgId: organization.orgId,
+      syncId,
+      persisted: !!persisted,
+      memberCount: members.length
+    });
+
+    return {
+      accepted: true,
+      ackPayload: {
+        syncId,
+        orgId: organization.orgId,
+        targetRootId,
+        receiverRootId: currentRootId
+      }
+    };
+  }
+
+  private async tryDirectOrgShare(nodeInfo: PeerNodeInfo, payload: { targetRootId: string; syncId: string; organization: any }): Promise<boolean> {
+    if (!this.node) {
+      return false;
+    }
+
+    const { multiaddr } = await runtimeImport('@multiformats/multiaddr');
+    const dialTargets = this.buildDialTargets(nodeInfo);
+    for (const target of dialTargets) {
+      try {
+        const stream = await this.node.dialProtocol(multiaddr(target), DIRECT_ORG_SHARE_PROTOCOL);
+        await this.writeStringToStream(stream, JSON.stringify({ type: 'org-share', payload }));
+        const responseText = await this.readStreamAsString(stream, 4000);
+        const response = JSON.parse(responseText || '{}') as { ok?: boolean; syncId?: string; reason?: string };
+        if (response.ok && response.syncId === payload.syncId) {
+          console.log('[p2p][org-share][direct] delivery confirmed by direct response', {
+            syncId: payload.syncId,
+            orgId: payload.organization?.orgId,
+            target
+          });
+          return true;
+        }
+      } catch (error) {
+        console.warn('[p2p][org-share][direct] dialProtocol failed', {
+          target,
+          error: String(error)
+        });
+      }
+    }
+
+    return false;
   }
 
   constructor(
@@ -254,6 +395,40 @@ export class P2PNode {
         });
       }
 
+      if (typeof this.node.handle === 'function') {
+        this.node.handle(DIRECT_ORG_SHARE_PROTOCOL, async ({ stream }: any) => {
+          try {
+            const requestText = await this.readStreamAsString(stream, 4000);
+            const request = JSON.parse(requestText || '{}') as { type?: string; payload?: any };
+            if (request.type !== 'org-share') {
+              await this.writeStringToStream(stream, JSON.stringify({ ok: false, reason: 'invalid type' }));
+              return;
+            }
+
+            const result = await this.applyIncomingOrgShare(request.payload, 'direct');
+            if (!result.accepted || !result.ackPayload) {
+              await this.writeStringToStream(stream, JSON.stringify({ ok: false, reason: 'not accepted' }));
+              return;
+            }
+
+            await this.writeStringToStream(stream, JSON.stringify({
+              ok: true,
+              syncId: result.ackPayload.syncId,
+              orgId: result.ackPayload.orgId,
+              receiverRootId: result.ackPayload.receiverRootId
+            }));
+            console.log('[p2p][org-share][direct] ack responded', {
+              syncId: result.ackPayload.syncId,
+              orgId: result.ackPayload.orgId,
+              receiverRootId: result.ackPayload.receiverRootId
+            });
+          } catch (error) {
+            await this.writeStringToStream(stream, JSON.stringify({ ok: false, reason: String(error) }));
+          }
+        });
+        console.log('[p2p] direct org-share protocol registered', DIRECT_ORG_SHARE_PROTOCOL);
+      }
+
       // 订阅统一的同步 topic
       const syncTopic = 'spark-sync';
       await this.node.services.pubsub.subscribe(syncTopic);
@@ -313,68 +488,17 @@ export class P2PNode {
         }
 
         if (parsed.type === 'org-share') {
-          const targetRootId = parsed.payload?.targetRootId;
-          const organization = parsed.payload?.organization;
-          const syncId = parsed.payload?.syncId;
-          if (!targetRootId || !organization?.orgId) {
-            console.warn('[p2p][org-share] invalid payload, skip');
-            return;
-          }
-
-          console.log('[p2p][org-share] received candidate', {
-            orgId: organization.orgId,
-            targetRootId,
-            members: Array.isArray(organization.members) ? organization.members.length : 0
-          });
-
-          if (!this.identityContext) {
-            console.warn('[p2p][org-share] missing identity context, skip');
-            return;
-          }
-
-          const currentRootId = await this.identityContext.getCurrentRootId();
-          if (!currentRootId || currentRootId !== targetRootId) {
-            console.log('[p2p][org-share] target mismatch, skip', {
-              currentRootId,
-              targetRootId
-            });
-            return;
-          }
-
-          const members = Array.isArray(organization.members) ? organization.members : [];
-          const containsCurrent = members.some((member: any) => member?.rootId === currentRootId);
-          if (!containsCurrent) {
-            console.warn('[p2p][org-share] current root not found in members, skip', {
-              currentRootId,
-              orgId: organization.orgId
-            });
-            return;
-          }
-
-          await this.db.open();
-          await this.db.put(`org:meta:${organization.orgId}`, JSON.stringify(organization));
-          const persisted = await this.db.get(`org:meta:${organization.orgId}`);
-          console.log('[p2p][org-share] organization synced from peer', {
-            orgId: organization.orgId,
-            persisted: !!persisted,
-            memberCount: members.length
-          });
-
-          if (syncId) {
+          const result = await this.applyIncomingOrgShare(parsed.payload, 'pubsub');
+          if (result.accepted && result.ackPayload?.syncId) {
             await this.broadcast('spark-sync', {
               type: 'org-share-ack',
               domain: 'system',
-              payload: {
-                syncId,
-                orgId: organization.orgId,
-                targetRootId,
-                receiverRootId: currentRootId
-              }
+              payload: result.ackPayload
             });
             console.log('[p2p][org-share] ack sent', {
-              syncId,
-              orgId: organization.orgId,
-              receiverRootId: currentRootId
+              syncId: result.ackPayload.syncId,
+              orgId: result.ackPayload.orgId,
+              receiverRootId: result.ackPayload.receiverRootId
             });
           }
         }
@@ -425,8 +549,12 @@ export class P2PNode {
     }
 
     try {
-      const peers = typeof this.node.getPeers === 'function' ? this.node.getPeers() : [];
-      return Array.isArray(peers) ? this.normalizePeerIdList(peers) : [];
+      const connections = typeof this.node.getConnections === 'function' ? this.node.getConnections() : [];
+      if (!Array.isArray(connections)) {
+        return [];
+      }
+      const peers = connections.map((connection: any) => connection?.remotePeer).filter(Boolean);
+      return Array.from(new Set(this.normalizePeerIdList(peers)));
     } catch {
       return [];
     }
@@ -466,18 +594,7 @@ export class P2PNode {
     if (!this.node) throw new Error('p2p node not started');
 
     const { multiaddr } = await runtimeImport('@multiformats/multiaddr');
-    const addresses = nodeInfo.addresses.map((item) => item.trim()).filter((item) => item.length > 0);
-    if (addresses.length === 0) {
-      throw new Error('Member node addresses are required for p2p connect');
-    }
-
-    const dialTargets = addresses.flatMap((address) => {
-      const targets = [address];
-      if (nodeInfo.peerId && !address.includes('/p2p/')) {
-        targets.push(`${address.replace(/\/$/, '')}/p2p/${nodeInfo.peerId}`);
-      }
-      return targets;
-    });
+    const dialTargets = this.buildDialTargets(nodeInfo);
 
     let lastError: unknown = null;
     for (const target of dialTargets) {
@@ -528,6 +645,12 @@ export class P2PNode {
         }
       }
     } as const;
+
+    const directDelivered = await this.tryDirectOrgShare(nodeInfo, payload.payload);
+    if (directDelivered) {
+      this.markOrgShareAck(syncId);
+      return;
+    }
 
     // gossipsub 在刚建立连接后可能存在短暂传播窗口，增加小次数重试提升送达率。
     const retryIntervalsMs = [0, 400, 1000, 2000, 3500];
