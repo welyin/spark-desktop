@@ -65,6 +65,28 @@ export class P2PNode {
   // 处理 ACK 先到、waiter 后注册的竞态缓存。
   private orgShareAckCache = new Set<string>();
 
+  /**
+   * 兼容不同 libp2p 版本/中间件的入参形态，解析出可读写 stream。
+   */
+  private resolveProtocolStream(input: any): any | null {
+    const candidates = [
+      input,
+      input?.stream,
+      input?.incomingStream,
+      input?.detail,
+      input?.detail?.stream,
+      input?.detail?.incomingStream
+    ];
+
+    for (const candidate of candidates) {
+      if (candidate?.source && candidate?.sink) {
+        return candidate;
+      }
+    }
+
+    return null;
+  }
+
   /** 简单延时工具，用于重试节奏控制。 */
   private async delay(ms: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, ms));
@@ -190,7 +212,12 @@ export class P2PNode {
 
   // 按单帧读取 stream 文本，避免两端都等待 EOF 造成协议死锁。
   private async readStreamAsString(stream: any, timeoutMs = 3000): Promise<string> {
-    const iterator = stream.source?.[Symbol.asyncIterator]?.();
+    const resolvedStream = this.resolveProtocolStream(stream);
+    if (!resolvedStream) {
+      throw new Error('protocol stream is unavailable');
+    }
+
+    const iterator = resolvedStream.source?.[Symbol.asyncIterator]?.();
     if (!iterator) {
       throw new Error('stream source is not iterable');
     }
@@ -212,7 +239,12 @@ export class P2PNode {
 
   // 向 libp2p stream 写入单次文本帧。
   private async writeStringToStream(stream: any, text: string): Promise<void> {
-    await stream.sink((async function* () {
+    const resolvedStream = this.resolveProtocolStream(stream);
+    if (!resolvedStream) {
+      throw new Error('protocol stream is unavailable');
+    }
+
+    await resolvedStream.sink((async function* () {
       yield Buffer.from(text, 'utf8');
     })());
   }
@@ -302,7 +334,17 @@ export class P2PNode {
           protocol: DIRECT_ORG_SHARE_PROTOCOL,
           syncId: payload.syncId
         });
-        const stream = await this.node.dialProtocol(multiaddr(target), DIRECT_ORG_SHARE_PROTOCOL);
+        const streamResult = await this.node.dialProtocol(multiaddr(target), DIRECT_ORG_SHARE_PROTOCOL);
+        const stream = this.resolveProtocolStream(streamResult);
+        if (!stream) {
+          console.warn('[p2p][org-share][direct] dialProtocol returned unsupported stream shape', {
+            target,
+            hasStream: !!streamResult?.stream,
+            hasIncomingStream: !!streamResult?.incomingStream,
+            keys: streamResult ? Object.keys(streamResult) : []
+          });
+          continue;
+        }
         await this.writeStringToStream(stream, JSON.stringify({ type: 'org-share', payload }));
         const responseText = await this.readStreamAsString(stream, 4000);
         const response = JSON.parse(responseText || '{}') as { ok?: boolean; syncId?: string; reason?: string };
@@ -428,7 +470,19 @@ export class P2PNode {
 
       if (typeof this.node.handle === 'function') {
         // 注册直连协议接收端：接收 org-share -> 落库校验 -> 同流返回确认响应。
-        this.node.handle(DIRECT_ORG_SHARE_PROTOCOL, async ({ stream }: any) => {
+        this.node.handle(DIRECT_ORG_SHARE_PROTOCOL, async (incoming: any) => {
+          const stream = this.resolveProtocolStream(incoming);
+          if (!stream) {
+            console.error('[p2p][org-share][direct] handler stream missing', {
+              hasStream: !!incoming?.stream,
+              hasIncomingStream: !!incoming?.incomingStream,
+              hasDetailStream: !!incoming?.detail?.stream,
+              hasDetailIncomingStream: !!incoming?.detail?.incomingStream,
+              keys: incoming ? Object.keys(incoming) : []
+            });
+            return;
+          }
+
           try {
             const requestText = await this.readStreamAsString(stream, 4000);
             const request = JSON.parse(requestText || '{}') as { type?: string; payload?: any };
@@ -461,7 +515,11 @@ export class P2PNode {
             });
           } catch (error) {
             console.error('[p2p][org-share][direct] handler failed', error);
-            await this.writeStringToStream(stream, JSON.stringify({ ok: false, reason: String(error) }));
+            try {
+              await this.writeStringToStream(stream, JSON.stringify({ ok: false, reason: String(error) }));
+            } catch {
+              // ignore response write errors in handler failure path
+            }
           }
         });
         console.log('[p2p] direct org-share protocol registered', DIRECT_ORG_SHARE_PROTOCOL);
