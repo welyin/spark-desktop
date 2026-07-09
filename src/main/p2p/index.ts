@@ -49,6 +49,7 @@ type P2PIdentityContext = {
 };
 
 const runtimeImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
+// 点对点组织同步协议：用于绕过 pubsub mesh 时序不稳定，走 request-response 直连确认。
 const DIRECT_ORG_SHARE_PROTOCOL = '/spark/org-share/1.0.0';
 
 let p2pNodeInstance: P2PNode | null = null;
@@ -59,13 +60,17 @@ export class P2PNode {
   private privateKey: crypto.KeyObject;
   public publicKeyPem: string;
   public nodeId: string = 'local-node';
+  // 发送端等待 org-share-ack 的一次性等待器（key: syncId）。
   private orgShareAckWaiters = new Map<string, () => void>();
+  // 处理 ACK 先到、waiter 后注册的竞态缓存。
   private orgShareAckCache = new Set<string>();
 
+  /** 简单延时工具，用于重试节奏控制。 */
   private async delay(ms: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  /** 将 PeerId 列表标准化为字符串数组。 */
   private normalizePeerIdList(items: any[]): string[] {
     return items
       .map((item) => {
@@ -77,6 +82,7 @@ export class P2PNode {
       .filter((item) => item.length > 0);
   }
 
+  /** 从节点信息中提取目标 PeerId（优先显式 peerId，其次从 multiaddr 解析）。 */
   private extractPeerId(nodeInfo: PeerNodeInfo): string | null {
     const direct = nodeInfo.peerId?.trim();
     if (direct) {
@@ -93,6 +99,7 @@ export class P2PNode {
     return null;
   }
 
+  /** 构建拨号目标列表：原始地址 + 自动补全 /p2p/<peerId> 地址。 */
   private buildDialTargets(nodeInfo: PeerNodeInfo): string[] {
     const addresses = nodeInfo.addresses.map((item) => item.trim()).filter((item) => item.length > 0);
     if (addresses.length === 0) {
@@ -109,6 +116,7 @@ export class P2PNode {
     });
   }
 
+  /** 获取某个 pubsub topic 的当前订阅者列表。 */
   private getTopicSubscribers(topic: string): string[] {
     if (!this.node?.services?.pubsub) {
       return [];
@@ -122,6 +130,7 @@ export class P2PNode {
     return Array.isArray(subscribers) ? this.normalizePeerIdList(subscribers) : [];
   }
 
+  /** 在限定时间内等待目标 peer 出现在 topic 订阅者中。 */
   private async waitForTopicSubscriber(topic: string, targetPeerId: string | null, timeoutMs: number): Promise<void> {
     if (!targetPeerId) {
       return;
@@ -148,6 +157,7 @@ export class P2PNode {
     });
   }
 
+  /** 标记指定 syncId 已收到 ACK，唤醒等待方或写入竞态缓存。 */
   private markOrgShareAck(syncId: string): void {
     const done = this.orgShareAckWaiters.get(syncId);
     if (done) {
@@ -157,6 +167,7 @@ export class P2PNode {
     this.orgShareAckCache.add(syncId);
   }
 
+  /** 等待指定 syncId 的 ACK，在超时前返回是否成功。 */
   private async waitForOrgShareAck(syncId: string, timeoutMs: number): Promise<boolean> {
     if (this.orgShareAckCache.has(syncId)) {
       this.orgShareAckCache.delete(syncId);
@@ -177,29 +188,36 @@ export class P2PNode {
     });
   }
 
+  // 按单帧读取 stream 文本，避免两端都等待 EOF 造成协议死锁。
   private async readStreamAsString(stream: any, timeoutMs = 3000): Promise<string> {
-    const readPromise = (async () => {
-      const chunks: Buffer[] = [];
-      for await (const chunk of stream.source) {
-        chunks.push(Buffer.from(chunk));
-      }
-      return Buffer.concat(chunks).toString('utf8');
-    })();
+    const iterator = stream.source?.[Symbol.asyncIterator]?.();
+    if (!iterator) {
+      throw new Error('stream source is not iterable');
+    }
 
-    return await Promise.race([
-      readPromise,
-      new Promise<string>((_, reject) => {
+    const nextPromise = iterator.next();
+    const firstChunk = await Promise.race([
+      nextPromise,
+      new Promise<IteratorResult<Uint8Array>>((_, reject) => {
         setTimeout(() => reject(new Error('stream read timeout')), timeoutMs);
       })
     ]);
+
+    if (!firstChunk || firstChunk.done || !firstChunk.value) {
+      return '';
+    }
+
+    return Buffer.from(firstChunk.value).toString('utf8');
   }
 
+  // 向 libp2p stream 写入单次文本帧。
   private async writeStringToStream(stream: any, text: string): Promise<void> {
     await stream.sink((async function* () {
       yield Buffer.from(text, 'utf8');
     })());
   }
 
+  // org-share 的统一校验与落库逻辑，供 pubsub 与直连协议复用，避免双路径行为漂移。
   private async applyIncomingOrgShare(payload: any, source: 'pubsub' | 'direct'): Promise<{
     accepted: boolean;
     ackPayload?: {
@@ -269,6 +287,7 @@ export class P2PNode {
     };
   }
 
+  // 直连同步优先路径：连接已建立后直接 dialProtocol，拿到同步响应即视为成功。
   private async tryDirectOrgShare(nodeInfo: PeerNodeInfo, payload: { targetRootId: string; syncId: string; organization: any }): Promise<boolean> {
     if (!this.node) {
       return false;
@@ -278,6 +297,11 @@ export class P2PNode {
     const dialTargets = this.buildDialTargets(nodeInfo);
     for (const target of dialTargets) {
       try {
+        console.log('[p2p][org-share][direct] dialing protocol', {
+          target,
+          protocol: DIRECT_ORG_SHARE_PROTOCOL,
+          syncId: payload.syncId
+        });
         const stream = await this.node.dialProtocol(multiaddr(target), DIRECT_ORG_SHARE_PROTOCOL);
         await this.writeStringToStream(stream, JSON.stringify({ type: 'org-share', payload }));
         const responseText = await this.readStreamAsString(stream, 4000);
@@ -290,6 +314,12 @@ export class P2PNode {
           });
           return true;
         }
+
+        console.warn('[p2p][org-share][direct] response not accepted', {
+          target,
+          syncId: payload.syncId,
+          response
+        });
       } catch (error) {
         console.warn('[p2p][org-share][direct] dialProtocol failed', {
           target,
@@ -301,6 +331,7 @@ export class P2PNode {
     return false;
   }
 
+  /** 创建 P2P 节点实例并初始化本地签名密钥对。 */
   constructor(
     private readonly db: LevelDB,
     private readonly identityContext?: P2PIdentityContext
@@ -396,10 +427,16 @@ export class P2PNode {
       }
 
       if (typeof this.node.handle === 'function') {
+        // 注册直连协议接收端：接收 org-share -> 落库校验 -> 同流返回确认响应。
         this.node.handle(DIRECT_ORG_SHARE_PROTOCOL, async ({ stream }: any) => {
           try {
             const requestText = await this.readStreamAsString(stream, 4000);
             const request = JSON.parse(requestText || '{}') as { type?: string; payload?: any };
+            console.log('[p2p][org-share][direct] request received', {
+              type: request.type,
+              syncId: request.payload?.syncId,
+              orgId: request.payload?.organization?.orgId
+            });
             if (request.type !== 'org-share') {
               await this.writeStringToStream(stream, JSON.stringify({ ok: false, reason: 'invalid type' }));
               return;
@@ -423,6 +460,7 @@ export class P2PNode {
               receiverRootId: result.ackPayload.receiverRootId
             });
           } catch (error) {
+            console.error('[p2p][org-share][direct] handler failed', error);
             await this.writeStringToStream(stream, JSON.stringify({ ok: false, reason: String(error) }));
           }
         });
@@ -543,6 +581,7 @@ export class P2PNode {
     }
   }
 
+  /** 读取当前已建立连接的远端 peer 列表。 */
   private getConnectedPeers(): string[] {
     if (!this.node) {
       return [];
@@ -559,6 +598,7 @@ export class P2PNode {
       return [];
     }
   }
+  /** 停止 p2p 节点。 */
   async stop() {
     if (this.startPromise) {
       await this.startPromise;
@@ -568,6 +608,7 @@ export class P2PNode {
     this.node = null;
   }
 
+  /** 返回节点是否已处于启动态。 */
   isStarted() {
     return !!this.node;
   }
@@ -590,6 +631,7 @@ export class P2PNode {
     await this.node.services.pubsub.publish(topic, payload);
   }
 
+  /** 按成员节点信息尝试建立 p2p 连接。 */
   async connectPeer(nodeInfo: PeerNodeInfo): Promise<void> {
     if (!this.node) throw new Error('p2p node not started');
 
@@ -611,6 +653,7 @@ export class P2PNode {
     throw new Error(`Failed to connect peer by provided addresses: ${String(lastError)}`);
   }
 
+  /** 将组织同步给目标成员（直连优先，pubsub 兜底，ACK 确认成功）。 */
   async syncOrganizationToMember(nodeInfo: PeerNodeInfo, targetRootId: string, organization: any): Promise<void> {
     if (!this.node) throw new Error('p2p node not started');
     const syncTopic = 'spark-sync';
@@ -646,13 +689,14 @@ export class P2PNode {
       }
     } as const;
 
+    // 优先尝试直连同步，若成功则无需进入 pubsub 重试链路。
     const directDelivered = await this.tryDirectOrgShare(nodeInfo, payload.payload);
     if (directDelivered) {
       this.markOrgShareAck(syncId);
       return;
     }
 
-    // gossipsub 在刚建立连接后可能存在短暂传播窗口，增加小次数重试提升送达率。
+    // pubsub 兜底：在 mesh 传播窗口内做短间隔重试，并以 ACK 为最终成功条件。
     const retryIntervalsMs = [0, 400, 1000, 2000, 3500];
     for (let i = 0; i < retryIntervalsMs.length; i += 1) {
       const waitMs = retryIntervalsMs[i];
@@ -691,6 +735,7 @@ export class P2PNode {
     throw new Error(`Organization sync ack timeout: orgId=${organization?.orgId}, targetRootId=${targetRootId}, syncId=${syncId}`);
   }
 
+  /** 获取本地节点可观测信息（地址、连接、订阅者等）。 */
   getLocalNodeInfo(): LocalP2PNodeInfo {
     if (!this.node) {
       return {
