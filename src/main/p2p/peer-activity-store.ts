@@ -14,6 +14,7 @@ type ExtractPeerIdFn = (nodeInfo: PeerNodeInfo) => string | null;
  */
 export class PeerActivityStore {
   private readonly cache = new Map<string, PeerActivityRecord>();
+  private static readonly FAILURE_PURGE_THRESHOLD = 10;
 
   constructor(
     private readonly db: LevelDB,
@@ -56,6 +57,30 @@ export class PeerActivityStore {
     await this.db.put(this.peerRecordKey(record.peerId), JSON.stringify(record));
   }
 
+  /** 删除记录（同时清理缓存与数据库）。 */
+  private async remove(peerId: string): Promise<void> {
+    this.cache.delete(peerId);
+    await this.db.del(this.peerRecordKey(peerId));
+  }
+
+  /** 兼容旧数据：没有 streak 字段时按历史统计推断一个基线。 */
+  private resolveFailureStreak(record: PeerActivityRecord): number {
+    if (typeof record.consecutiveFailureCount === 'number') {
+      return record.consecutiveFailureCount;
+    }
+    return record.successCount === 0 ? record.failureCount : 0;
+  }
+
+  /** 判断“完全不活跃”：没有成功连接历史且没有在线时长且不在当前会话连接中。 */
+  private isCompletelyInactive(record: PeerActivityRecord): boolean {
+    return (
+      record.successCount === 0 &&
+      record.cumulativeConnectedMs === 0 &&
+      !record.currentSessionConnectedAt &&
+      record.lastConnectedAt === null
+    );
+  }
+
   /** 初始化新 peer 的默认统计结构。 */
   private newRecord(peerId: string, now: number): PeerActivityRecord {
     return {
@@ -95,10 +120,26 @@ export class PeerActivityStore {
     if (result === 'success') {
       next.successCount += 1;
       next.lastConnectedAt = now;
+      next.consecutiveFailureCount = 0;
     }
     if (result === 'failure') {
+      const previousFailureStreak = this.resolveFailureStreak(next);
       next.failureCount += 1;
+      next.consecutiveFailureCount = previousFailureStreak + 1;
       next.lastError = error instanceof Error ? error.message : String(error);
+
+      if (
+        next.consecutiveFailureCount >= PeerActivityStore.FAILURE_PURGE_THRESHOLD &&
+        this.isCompletelyInactive(next)
+      ) {
+        await this.remove(peerId);
+        console.warn('[p2p][peer-activity] removed inactive peer after repeated failures', {
+          peerId,
+          failureCount: next.failureCount,
+          consecutiveFailureCount: next.consecutiveFailureCount
+        });
+        return;
+      }
     }
 
     await this.save(next);

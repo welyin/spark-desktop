@@ -3,62 +3,60 @@
     <h1>测试</h1>
     <p>这里是测试页面。</p>
 
-    <section class="card nested">
-      <h2>LevelDB 测试面板</h2>
+    <el-card class="nested">
+      <template #header>
+        <h2>LevelDB 测试面板</h2>
+      </template>
       <div class="row">
-        <button @click="$emit('open-db')" :disabled="dbStatus.open">打开数据库</button>
-        <button @click="$emit('close-db')" :disabled="!dbStatus.open">关闭数据库</button>
+        <el-button type="primary" @click="$emit('open-db')" :disabled="dbStatus.open">打开数据库</el-button>
+        <el-button @click="$emit('close-db')" :disabled="!dbStatus.open">关闭数据库</el-button>
       </div>
       <div class="row">
-        <button @click="$emit('put-value')" :disabled="!dbStatus.open">Put 键值</button>
-        <button @click="$emit('get-value')" :disabled="!dbStatus.open">Get 键值</button>
-        <button @click="$emit('del-value')" :disabled="!dbStatus.open">Del 键值</button>
-        <button @click="$emit('batch-ops')" :disabled="!dbStatus.open">Batch 操作</button>
+        <el-button @click="$emit('put-value')" :disabled="!dbStatus.open">Put 键值</el-button>
+        <el-button @click="$emit('get-value')" :disabled="!dbStatus.open">Get 键值</el-button>
+        <el-button @click="$emit('del-value')" :disabled="!dbStatus.open">Del 键值</el-button>
+        <el-button @click="$emit('batch-ops')" :disabled="!dbStatus.open">Batch 操作</el-button>
       </div>
-      <div class="status">
-        <strong>数据库路径：</strong>{{ dbPath }}
-      </div>
-      <div class="status">
-        <strong>打开状态：</strong>{{ dbStatus.open ? '已打开' : '已关闭' }}
-      </div>
-      <div class="status">
-        <strong>结果：</strong>{{ resultMessage }}
-      </div>
-    </section>
+      <el-descriptions :column="1" border>
+        <el-descriptions-item label="数据库路径">{{ dbPath }}</el-descriptions-item>
+        <el-descriptions-item label="打开状态">{{ dbStatus.open ? '已打开' : '已关闭' }}</el-descriptions-item>
+        <el-descriptions-item label="结果">{{ resultMessage }}</el-descriptions-item>
+      </el-descriptions>
+    </el-card>
 
-    <section class="card nested node-panel">
+    <el-card class="nested node-panel">
       <div class="panel-title">
         <div>
           <h2>节点面板</h2>
           <p class="subtitle">展示本地保存的所有节点数据，并可按节点触发组织同步。</p>
         </div>
-        <button class="secondary" @click="refreshNodes" :disabled="loadingNodes">
+        <el-button type="primary" @click="refreshNodes" :loading="loadingNodes" :disabled="loadingNodes">
           {{ loadingNodes ? '刷新中...' : '刷新节点' }}
-        </button>
+        </el-button>
       </div>
 
-      <div v-if="nodeMessage" class="status message">{{ nodeMessage }}</div>
+      <el-alert v-if="nodeMessage" class="message" :title="nodeMessage" type="info" :closable="false" show-icon />
       <div v-if="loadingNodes" class="empty-state">正在加载节点...</div>
       <div v-else-if="nodeRecords.length === 0" class="empty-state">暂无保存的节点记录。</div>
       <div v-else class="node-grid">
-        <article v-for="node in nodeRecords" :key="node.nodeKey" class="node-card">
+        <el-card v-for="node in nodeRecords" :key="node.nodeKey" class="node-card" shadow="never">
           <div class="node-card-head">
             <strong>{{ node.peerId || '未解析 PeerId' }}</strong>
-            <button class="sync-button" @click="syncNode(node)" :disabled="syncingNodeKey === node.nodeKey">
+            <el-button type="success" @click="syncNode(node)" :loading="syncingNodeKey === node.nodeKey" :disabled="syncingNodeKey === node.nodeKey">
               {{ syncingNodeKey === node.nodeKey ? '同步中...' : '同步' }}
-            </button>
+            </el-button>
           </div>
           <p class="muted">{{ node.addresses.length }} 个地址 · 最近 {{ formatDate(node.lastSeenAt) }}</p>
           <div class="node-meta">
-            <span>成功 {{ node.successCount }}</span>
-            <span>失败 {{ node.failureCount }}</span>
-            <span>累计在线 {{ formatDuration(node.cumulativeConnectedMs) }}</span>
+            <el-tag effect="plain">成功 {{ node.successCount }}</el-tag>
+            <el-tag type="danger" effect="plain">失败 {{ node.failureCount }}</el-tag>
+            <el-tag type="info" effect="plain">累计在线 {{ formatDuration(node.cumulativeConnectedMs) }}</el-tag>
           </div>
           <p v-if="node.lastError" class="error-text">最后错误：{{ node.lastError }}</p>
           <p class="address-text">{{ node.addresses.join(' , ') }}</p>
-        </article>
+        </el-card>
       </div>
-    </section>
+    </el-card>
   </section>
 </template>
 
@@ -198,16 +196,6 @@ export default defineComponent({
 <style scoped>
 .card-page {
   padding: 16px;
-  border: 1px solid #ddd;
-  border-radius: 10px;
-  background: #fff;
-}
-
-.card {
-  padding: 16px;
-  border: 1px solid #ddd;
-  border-radius: 10px;
-  background: #fff;
 }
 
 .nested {
@@ -247,10 +235,6 @@ export default defineComponent({
 .node-card {
   width: 100%;
   box-sizing: border-box;
-  padding: 14px;
-  border-radius: 12px;
-  border: 1px solid #e2e8f0;
-  background: #fff;
 }
 
 .node-card-head {
@@ -275,33 +259,7 @@ export default defineComponent({
 }
 
 .node-meta span {
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: #f1f5f9;
   font-size: 12px;
-}
-
-button {
-  padding: 10px 16px;
-  border: none;
-  border-radius: 6px;
-  background: #2563eb;
-  color: white;
-  cursor: pointer;
-}
-
-button.secondary,
-.sync-button {
-  background: #0f766e;
-}
-
-.sync-button {
-  flex-shrink: 0;
-}
-
-button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
 }
 
 .status {

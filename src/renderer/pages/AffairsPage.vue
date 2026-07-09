@@ -1,7 +1,11 @@
 <template>
-  <section class="card-page">
-    <h1>事务</h1>
-    <p>这里是事务页面。</p>
+  <section class="affairs-page">
+    <el-card shadow="never">
+      <template #header>
+        <h1>事务</h1>
+      </template>
+      <el-empty description="这里是事务页面。" />
+    </el-card>
   </section>
 </template>
 
@@ -14,10 +18,13 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.card-page {
-  padding: 16px;
-  border: 1px solid #ddd;
-  border-radius: 10px;
-  background: #fff;
+.affairs-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+h1 {
+  margin: 0;
 }
 </style>

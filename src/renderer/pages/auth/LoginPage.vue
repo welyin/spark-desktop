@@ -1,21 +1,23 @@
 <template>
-  <section class="card-section">
-    <h2>用户登录</h2>
-    <p>登录会解锁 RootID，用于签名与授权。</p>
+  <el-card>
+    <template #header>
+      <div>
+        <h2>用户登录</h2>
+        <p class="hint">登录会解锁 RootID，用于签名与授权。</p>
+      </div>
+    </template>
 
-    <div class="row">
-      <label>
-        登录密码
-        <input v-model="password" type="password" placeholder="输入注册密码" />
-      </label>
-    </div>
+    <el-form label-position="top">
+      <el-form-item label="登录密码">
+        <el-input v-model="password" type="password" show-password placeholder="输入注册密码" :disabled="busy" />
+      </el-form-item>
+      <el-form-item>
+        <el-button type="primary" @click="submit" :loading="busy" :disabled="busy">解锁 RootID</el-button>
+      </el-form-item>
+    </el-form>
 
-    <div class="row">
-      <button @click="submit" :disabled="busy">解锁 RootID</button>
-    </div>
-
-    <p class="hint">{{ message }}</p>
-  </section>
+    <el-alert v-if="message" :title="message" type="info" :closable="false" show-icon />
+  </el-card>
 </template>
 
 <script lang="ts">
@@ -58,38 +60,12 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.card-section {
-  padding: 14px;
-  border: 1px solid #ddd;
-  border-radius: 10px;
-  background: #fff;
-}
-
-.row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 10px;
-}
-
-input {
-  margin-left: 8px;
-  padding: 8px;
-  border: 1px solid #d0d7de;
-  border-radius: 6px;
-}
-
-button {
-  padding: 9px 14px;
-  border: none;
-  border-radius: 6px;
-  background: #2563eb;
-  color: #fff;
-  cursor: pointer;
+h2 {
+  margin: 0;
 }
 
 .hint {
-  margin-top: 10px;
-  color: #4b5563;
+  margin: 6px 0 0;
+  color: #64748b;
 }
 </style>

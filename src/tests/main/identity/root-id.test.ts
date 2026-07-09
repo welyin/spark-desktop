@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
-import { RootIdentityManager } from './root-id';
+import { RootIdentityManager } from '../../../main/identity/root-id';
 
 describe('RootIdentityManager', () => {
   it('initializes, signs, locks and unlocks from encrypted local storage', async () => {

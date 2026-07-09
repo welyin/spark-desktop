@@ -3,35 +3,45 @@
     <h1>应用</h1>
     <p>打开插件页面会在左侧新增一个 tab，并显示插件图标。</p>
 
-    <section class="card nested">
-      <h2>插件 Tab 管理</h2>
-      <div class="row">
-        <label>
-          插件域
-          <input v-model="domain" type="text" placeholder="plugin:demo" />
-        </label>
-        <label>
-          视图 ID
-          <input v-model="view" type="text" placeholder="default" />
-        </label>
-      </div>
-      <div class="row">
-        <label>
-          标签标题
-          <input v-model="title" type="text" placeholder="Demo 插件" />
-        </label>
-        <label>
-          图标文字
-          <input v-model="icon" type="text" maxlength="2" placeholder="D" />
-        </label>
-      </div>
-      <div class="row">
-        <button @click="openPluginTab">打开插件 Tab</button>
-      </div>
-      <div class="status">
-        <strong>状态：</strong>{{ message }}
-      </div>
-    </section>
+    <el-card class="nested">
+      <template #header>
+        <h2>插件 Tab 管理</h2>
+      </template>
+
+      <el-form label-position="top">
+        <el-row :gutter="12">
+          <el-col :xs="24" :sm="12">
+            <el-form-item label="插件域">
+              <el-input v-model="domain" placeholder="plugin:demo" />
+            </el-form-item>
+          </el-col>
+          <el-col :xs="24" :sm="12">
+            <el-form-item label="视图 ID">
+              <el-input v-model="view" placeholder="default" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-row :gutter="12">
+          <el-col :xs="24" :sm="12">
+            <el-form-item label="标签标题">
+              <el-input v-model="title" placeholder="Demo 插件" />
+            </el-form-item>
+          </el-col>
+          <el-col :xs="24" :sm="12">
+            <el-form-item label="图标文字">
+              <el-input v-model="icon" maxlength="2" placeholder="D" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-form-item>
+          <el-button type="primary" @click="openPluginTab">打开插件 Tab</el-button>
+        </el-form-item>
+      </el-form>
+
+      <el-alert :title="`状态：${message}`" type="info" :closable="false" show-icon />
+    </el-card>
   </section>
 </template>
 
@@ -86,48 +96,9 @@ export default defineComponent({
 <style scoped>
 .card-page {
   padding: 16px;
-  border: 1px solid #ddd;
-  border-radius: 10px;
-  background: #fff;
-}
-
-.card {
-  padding: 16px;
-  border: 1px solid #ddd;
-  border-radius: 10px;
-  background: #fff;
 }
 
 .nested {
   margin-top: 16px;
-}
-
-.row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-input {
-  margin-left: 8px;
-  padding: 8px;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-}
-
-button {
-  padding: 10px 16px;
-  border: none;
-  border-radius: 6px;
-  background: #2563eb;
-  color: white;
-  cursor: pointer;
-}
-
-.status {
-  margin-top: 8px;
-  color: #333;
 }
 </style>

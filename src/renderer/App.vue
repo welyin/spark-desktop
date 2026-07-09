@@ -1,101 +1,67 @@
 <template>
-  <div>
-    <section v-if="isPluginViewMode" class="card plugin-host">
-      <h1>插件独立视图</h1>
-      <p><strong>域：</strong>{{ pluginWindowDomain }}</p>
-      <p><strong>视图：</strong>{{ pluginWindowView }}</p>
-      <p v-if="pluginHostMessage">{{ pluginHostMessage }}</p>
+  <section v-if="isPluginViewMode" class="plugin-host-wrap">
+    <el-card shadow="never">
+      <template #header>
+        <div class="plugin-head">
+          <h1>插件独立视图</h1>
+          <el-tag type="info">{{ pluginWindowDomain }} / {{ pluginWindowView }}</el-tag>
+        </div>
+      </template>
+      <el-alert v-if="pluginHostMessage" :title="pluginHostMessage" type="warning" :closable="false" show-icon />
       <component v-if="activePluginView" :is="activePluginView" />
-    </section>
+    </el-card>
+  </section>
 
-    <template v-else>
-      <div class="shell">
-        <aside class="tabbar">
-          <button
-            class="tab-btn"
-            :class="{ active: activeTab === 'affairs' }"
-            @click="activeTab = 'affairs'"
-          >
-            <span class="tab-icon">事</span>
-            事务
-          </button>
-          <button
-            class="tab-btn"
-            :class="{ active: activeTab === 'org' }"
-            @click="activeTab = 'org'"
-          >
-            <span class="tab-icon">组</span>
-            组织
-          </button>
-          <button
-            class="tab-btn"
-            :class="{ active: activeTab === 'apps' }"
-            @click="activeTab = 'apps'"
-          >
-            <span class="tab-icon">应</span>
-            应用
-          </button>
+  <el-container v-else class="shell">
+    <el-aside width="210px" class="side">
+      <el-menu :default-active="activeTab" class="menu" @select="handleMenuSelect">
+        <el-menu-item index="affairs">事务</el-menu-item>
+        <el-menu-item index="org">组织</el-menu-item>
+        <el-menu-item index="apps">应用</el-menu-item>
+        <el-menu-item index="test">测试</el-menu-item>
+        <el-menu-item v-for="tab in pluginTabs" :key="tab.id" :index="tab.id">
+          {{ tab.icon }} {{ tab.title }}
+        </el-menu-item>
+        <el-menu-item index="mine" class="mine-entry">我的</el-menu-item>
+      </el-menu>
+    </el-aside>
 
-          <button
-            class="tab-btn"
-            :class="{ active: activeTab === 'test' }"
-            @click="activeTab = 'test'"
-          >
-            <span class="tab-icon">测</span>
-            测试
-          </button>
+    <el-main class="main">
+      <AffairsPage v-if="activeTab === 'affairs'" />
+      <OrgPage v-else-if="activeTab === 'org'" />
+      <AppsPage v-else-if="activeTab === 'apps'" @open-plugin-tab="openPluginTab" />
+      <TestPage
+        v-else-if="activeTab === 'test'"
+        :db-status="dbStatus"
+        :db-path="dbPath"
+        :result-message="resultMessage"
+        @open-db="openDb"
+        @close-db="closeDb"
+        @put-value="putValue"
+        @get-value="getValue"
+        @del-value="delValue"
+        @batch-ops="batchOps"
+      />
+      <MinePage v-else-if="activeTab === 'mine'" />
 
-          <button
-            v-for="tab in pluginTabs"
-            :key="tab.id"
-            class="tab-btn plugin"
-            :class="{ active: activeTab === tab.id }"
-            @click="activeTab = tab.id"
-          >
-            <span class="tab-icon">{{ tab.icon }}</span>
-            {{ tab.title }}
-          </button>
-
-          <button
-            class="tab-btn mine"
-            :class="{ active: activeTab === 'mine' }"
-            @click="activeTab = 'mine'"
-          >
-            <span class="tab-icon">我</span>
-            我的
-          </button>
-        </aside>
-
-        <main class="page-panel">
-          <AffairsPage v-if="activeTab === 'affairs'" />
-          <OrgPage v-else-if="activeTab === 'org'" />
-          <AppsPage v-else-if="activeTab === 'apps'" @open-plugin-tab="openPluginTab" />
-          <TestPage
-            v-else-if="activeTab === 'test'"
-            :db-status="dbStatus"
-            :db-path="dbPath"
-            :result-message="resultMessage"
-            @open-db="openDb"
-            @close-db="closeDb"
-            @put-value="putValue"
-            @get-value="getValue"
-            @del-value="delValue"
-            @batch-ops="batchOps"
-          />
-          <MinePage v-else-if="activeTab === 'mine'" />
-
-          <section v-else-if="activePluginTab" class="card">
-            <div class="plugin-tab-header">
-              <h1>{{ activePluginTab.title }}</h1>
-              <p>{{ activePluginTab.pluginDomain }} / {{ activePluginTab.pluginView }}</p>
-            </div>
-            <component v-if="activePluginComponent" :is="activePluginComponent" />
-            <p v-else class="status">未找到插件视图：{{ activePluginTab.pluginDomain }} / {{ activePluginTab.pluginView }}</p>
-          </section>
-        </main>
-      </div>
-    </template>
-  </div>
+      <el-card v-else-if="activePluginTab" shadow="never">
+        <template #header>
+          <div class="plugin-tab-header">
+            <h1>{{ activePluginTab.title }}</h1>
+            <p>{{ activePluginTab.pluginDomain }} / {{ activePluginTab.pluginView }}</p>
+          </div>
+        </template>
+        <component v-if="activePluginComponent" :is="activePluginComponent" />
+        <el-alert
+          v-else
+          :title="`未找到插件视图：${activePluginTab.pluginDomain} / ${activePluginTab.pluginView}`"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+      </el-card>
+    </el-main>
+  </el-container>
 </template>
 
 <script lang="ts">
@@ -161,6 +127,10 @@ export default defineComponent({
       }
       return getPluginView(activePluginTab.value.pluginDomain, activePluginTab.value.pluginView);
     });
+
+    const handleMenuSelect = (index: string) => {
+      activeTab.value = index;
+    };
 
     const openPluginTab = (payload: OpenPluginTabPayload) => {
       const pluginDomain = payload.pluginDomain.trim();
@@ -282,6 +252,7 @@ export default defineComponent({
       dbStatus,
       dbPath,
       resultMessage,
+      handleMenuSelect,
       openDb,
       closeDb,
       putValue,
@@ -296,149 +267,70 @@ export default defineComponent({
 
 <style>
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;
-  padding: 0;
   margin: 0;
-  background: #f2f4f8;
-}
-
-.card {
-  padding: 16px;
-  border: 1px solid #ddd;
-  border-radius: 10px;
-  background: #fff;
+  background: #f5f7fa;
 }
 
 .shell {
-  display: flex;
   min-height: 100vh;
+  display: block;
 }
 
-.tabbar {
+.side {
   position: fixed;
-  inset: 0 auto 0 0;
-  width: 164px;
-  background: #0f172a;
-  padding: 12px;
-  box-sizing: border-box;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  z-index: 20;
+  border-right: 1px solid var(--el-border-color);
+  background: #fff;
+  overflow-y: auto;
+}
+
+.menu {
+  height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  overflow-y: auto;
-  z-index: 10;
 }
 
-.tab-btn {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.06);
-  color: #e2e8f0;
-}
-
-.tab-icon {
-  width: 22px;
-  height: 22px;
-  border-radius: 11px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(255, 255, 255, 0.18);
-  font-size: 12px;
-}
-
-.tab-btn.active {
-  background: #16a34a;
-  border-color: #16a34a;
-  color: #fff;
-}
-
-.tab-btn.mine {
+.mine-entry {
   margin-top: auto;
-  align-self: flex-end;
 }
 
-.tab-btn.plugin {
-  background: rgba(34, 197, 94, 0.14);
-}
-
-.page-panel {
-  flex: 1;
-  margin-left: 164px;
+.main {
+  margin-left: 210px;
+  min-height: 100vh;
+  box-sizing: border-box;
   padding: 20px;
-  min-width: 0;
 }
 
-.nested {
-  margin-top: 16px;
-}
-
-.plugin-tab-header {
-  margin-bottom: 12px;
-}
-
-.row {
+.plugin-head {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
-  margin-bottom: 12px;
 }
 
-input {
-  margin-left: 8px;
-  padding: 8px;
-  border: 1px solid #ddd;
-  border-radius: 6px;
+.plugin-host-wrap {
+  padding: 16px;
 }
 
-button {
-  padding: 10px 16px;
-  border: none;
-  border-radius: 6px;
-  background: #2563eb;
-  color: white;
-  cursor: pointer;
+.plugin-tab-header h1 {
+  margin: 0;
 }
 
-button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.status {
-  margin-top: 8px;
-  color: #333;
-}
-
-.plugin-host {
-  margin: 16px;
+.plugin-tab-header p {
+  margin: 8px 0 0;
+  color: #64748b;
 }
 
 @media (max-width: 900px) {
-  .shell {
-    flex-direction: column;
+  .side {
+    width: 170px !important;
   }
 
-  .tabbar {
-    position: static;
-    width: auto;
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    overflow-y: visible;
-  }
-
-  .page-panel {
-    margin-left: 0;
-  }
-
-  .tab-btn.mine {
-    margin-top: 0;
-    margin-left: auto;
+  .main {
+    margin-left: 170px;
   }
 }
 </style>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { verifyAccess, DOMAIN_SYSTEM, DOMAIN_PLUGIN_PREFIX, DOMAIN_EVIDENCE, pluginDomain } from './domain';
+import { verifyAccess, DOMAIN_SYSTEM, DOMAIN_EVIDENCE, pluginDomain } from '../../../main/db/domain';
 
 describe('domain access control', () => {
   it('allows system access to any target domain', () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { OrganizationService } from './organization';
+import { OrganizationService } from '../../main/organization';
 
 class MemoryDb {
 	private readonly store = new Map<string, string>();

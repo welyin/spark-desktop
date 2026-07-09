@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { compareVersionVectors, resolveConflictByLWW, applyRemoteUpdate, metaKey } from './sync';
+import { compareVersionVectors, resolveConflictByLWW, applyRemoteUpdate, metaKey } from '../../../main/db/sync';
 
 function createMockDB() {
   const store = new Map<string, string>();

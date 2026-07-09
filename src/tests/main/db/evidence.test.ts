@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appendEvidence, verifyEvidenceChain, getEvidenceHeadHash, getEvidenceHeight, buildEvidencePayloadHash, buildEvidenceMetaHash } from './evidence';
+import { appendEvidence, verifyEvidenceChain, getEvidenceHeadHash, getEvidenceHeight, buildEvidencePayloadHash, buildEvidenceMetaHash } from '../../../main/db/evidence';
 
 function createMockDB() {
   const store = new Map<string, string>();

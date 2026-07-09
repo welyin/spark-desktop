@@ -60,6 +60,7 @@ export type PeerActivityRecord = {
   lastDisconnectedAt: number | null;
   successCount: number;
   failureCount: number;
+  consecutiveFailureCount?: number;
   cumulativeConnectedMs: number;
   currentSessionConnectedAt?: number;
   lastError?: string;

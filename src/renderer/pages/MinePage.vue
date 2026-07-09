@@ -1,70 +1,82 @@
 <template>
-  <section class="card-page">
-    <template v-if="!rootStatus.initialized || !rootStatus.unlocked">
-      <h1>我的</h1>
-      <p>账号登录前不会显示主界面，先完成 RootID 注册 / 登录。</p>
-      <RootAuthCenter @open-root-page="showRootPage = true" @update-auth-state="syncAuthState" />
-    </template>
+  <section class="mine-page">
+    <el-card shadow="never">
+      <template #header>
+        <h1>我的</h1>
+      </template>
 
-    <template v-else>
-      <h1>我的</h1>
-      <p>RootID 已就绪，可将下方信息发给组织管理员用于添加成员。</p>
+      <template v-if="!rootStatus.initialized || !rootStatus.unlocked">
+        <p class="lede">账号登录前不会显示主界面，先完成 RootID 注册 / 登录。</p>
+        <RootAuthCenter @open-root-page="showRootPage = true" @update-auth-state="syncAuthState" />
+      </template>
 
-      <section v-if="!showRootPage" class="card-section">
-        <div class="status-grid">
-          <div class="status-item"><strong>RootID：</strong>{{ rootStatus.rootId || '未创建' }}</div>
-          <div class="status-item"><strong>状态：</strong>已登录</div>
-          <div class="status-item"><strong>P2P 初始化：</strong>{{ p2pInfo.initialized ? '是' : '否' }}</div>
-          <div class="status-item"><strong>P2P 运行中：</strong>{{ p2pInfo.started ? '是' : '否' }}</div>
-          <div class="status-item"><strong>PeerId：</strong>{{ p2pInfo.peerId || '未获取' }}</div>
-          <div class="status-item">
-            <strong>已连接 Peer：</strong>
-            <template v-if="p2pInfo.connectedPeers.length > 0">
-              <div v-for="peer in p2pInfo.connectedPeers" :key="peer" class="mono">{{ peer }}</div>
-            </template>
-            <span v-else>暂无</span>
-          </div>
-          <div class="status-item">
-            <strong>spark-sync 订阅者：</strong>
-            <template v-if="p2pInfo.sparkSyncSubscribers.length > 0">
-              <div v-for="peer in p2pInfo.sparkSyncSubscribers" :key="`sub-${peer}`" class="mono">{{ peer }}</div>
-            </template>
-            <span v-else>暂无</span>
-          </div>
-          <div v-if="p2pInfo.error" class="status-item warn-item"><strong>P2P 启动异常：</strong>{{ p2pInfo.error }}</div>
-          <div class="status-item">
-            <strong>节点地址：</strong>
-            <template v-if="p2pInfo.addresses.length > 0">
-              <div v-for="addr in p2pInfo.addresses" :key="addr" class="mono">{{ addr }}</div>
-            </template>
-            <span v-else>未获取（可能仍在启动或未监听可拨号地址）</span>
-          </div>
-        </div>
+      <template v-else>
+        <p class="lede">RootID 已就绪，可将下方信息发给组织管理员用于添加成员。</p>
 
-        <section class="card-section share-card">
-          <h2>成员添加资料</h2>
-          <p class="hint">管理员添加你为成员时需要 RootID 与节点信息。</p>
-          <pre class="share-block">{{ shareText }}</pre>
+        <section v-if="!showRootPage" class="content-section">
+          <el-descriptions :column="1" border>
+            <el-descriptions-item label="RootID">{{ rootStatus.rootId || '未创建' }}</el-descriptions-item>
+            <el-descriptions-item label="状态">已登录</el-descriptions-item>
+            <el-descriptions-item label="P2P 初始化">{{ p2pInfo.initialized ? '是' : '否' }}</el-descriptions-item>
+            <el-descriptions-item label="P2P 运行中">{{ p2pInfo.started ? '是' : '否' }}</el-descriptions-item>
+            <el-descriptions-item label="PeerId">{{ p2pInfo.peerId || '未获取' }}</el-descriptions-item>
+            <el-descriptions-item label="已连接 Peer">
+              <template v-if="p2pInfo.connectedPeers.length > 0">
+                <div v-for="peer in p2pInfo.connectedPeers" :key="peer" class="mono">{{ peer }}</div>
+              </template>
+              <span v-else>暂无</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="spark-sync 订阅者">
+              <template v-if="p2pInfo.sparkSyncSubscribers.length > 0">
+                <div v-for="peer in p2pInfo.sparkSyncSubscribers" :key="`sub-${peer}`" class="mono">{{ peer }}</div>
+              </template>
+              <span v-else>暂无</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="节点地址">
+              <template v-if="p2pInfo.addresses.length > 0">
+                <div v-for="addr in p2pInfo.addresses" :key="addr" class="mono">{{ addr }}</div>
+              </template>
+              <span v-else>未获取（可能仍在启动或未监听可拨号地址）</span>
+            </el-descriptions-item>
+          </el-descriptions>
+
+          <el-alert
+            v-if="p2pInfo.error"
+            :title="`P2P 启动异常：${p2pInfo.error}`"
+            type="warning"
+            :closable="false"
+            show-icon
+            class="block-gap"
+          />
+
+          <el-card shadow="never" class="share-card">
+            <template #header>
+              <h2>成员添加资料</h2>
+            </template>
+            <p class="hint">管理员添加你为成员时需要 RootID 与节点信息。</p>
+            <pre class="share-block">{{ shareText }}</pre>
+            <div class="row">
+              <el-button type="primary" @click="copyShareText">复制资料</el-button>
+              <el-button @click="refreshNodeInfo">刷新节点信息</el-button>
+            </div>
+          </el-card>
+
           <div class="row">
-            <button @click="copyShareText">复制资料</button>
-            <button @click="refreshNodeInfo">刷新节点信息</button>
+            <el-button @click="showRootPage = true">RootID</el-button>
+            <el-button type="danger" plain @click="handleLogout">退出登录</el-button>
           </div>
+          <el-alert v-if="message" :title="message" type="info" :closable="false" show-icon class="block-gap" />
         </section>
 
-        <div class="row">
-          <button @click="showRootPage = true">RootID</button>
-          <button class="warn" @click="handleLogout">退出登录</button>
-        </div>
-        <p class="message">{{ message }}</p>
-      </section>
-
-      <RootIDPage v-else @logout="handleLogout" />
-    </template>
+        <RootIDPage v-else @logout="handleLogout" />
+      </template>
+    </el-card>
   </section>
 </template>
 
 <script lang="ts">
 import { computed, defineComponent, onMounted, ref } from 'vue';
+import { ElMessage } from 'element-plus';
 import RootAuthCenter from './auth/RootAuthCenter.vue';
 import RootIDPage from './RootIDPage.vue';
 
@@ -104,17 +116,17 @@ export default defineComponent({
       try {
         p2pInfo.value = await window.electronAPI.p2p.info();
         if (!p2pInfo.value.started || p2pInfo.value.addresses.length === 0) {
-          // 主进程启动 libp2p 需要一定时间，这里做一次短暂重试提升首屏可见性。
           setTimeout(async () => {
             try {
               p2pInfo.value = await window.electronAPI.p2p.info();
             } catch {
-              // Ignore retry error, keep previous state/error.
+              // Keep current p2p state on retry failure.
             }
           }, 1200);
         }
       } catch (error) {
         message.value = `读取 P2P 信息失败：${error}`;
+        ElMessage.error(message.value);
       }
     };
 
@@ -135,8 +147,10 @@ export default defineComponent({
       try {
         await navigator.clipboard.writeText(shareText.value);
         message.value = '成员添加资料已复制';
+        ElMessage.success(message.value);
       } catch (error) {
         message.value = `复制失败：${error}`;
+        ElMessage.error(message.value);
       }
     };
 
@@ -147,8 +161,10 @@ export default defineComponent({
         message.value = '';
         p2pInfo.value = { initialized: false, started: false, peerId: null, addresses: [], connectedPeers: [], sparkSyncSubscribers: [], error: null };
         await refreshStatus();
+        ElMessage.success('已退出登录');
       } catch (error) {
-        console.warn('退出失败', error);
+        message.value = `退出失败：${error}`;
+        ElMessage.error(message.value);
       }
     };
 
@@ -184,49 +200,34 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.card-page {
-  padding: 16px;
-  border: 1px solid #ddd;
-  border-radius: 10px;
-  background: #fff;
+.mine-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
-.card-section {
-  padding: 14px;
-  border: 1px solid #ddd;
-  border-radius: 10px;
-  background: #fff;
+h1,
+h2 {
+  margin: 0;
 }
 
-.status-grid {
-  margin-top: 10px;
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 8px;
+.lede {
+  margin: 0;
+  color: #64748b;
 }
 
-.status-item {
-  padding: 8px;
-  border-radius: 6px;
-  background: #f7fafc;
-}
-
-.warn-item {
-  background: #fff7ed;
-  color: #9a3412;
+.content-section {
+  margin-top: 14px;
 }
 
 .mono {
-  margin-top: 4px;
   font-family: Menlo, Monaco, Consolas, 'Courier New', monospace;
   font-size: 12px;
-  color: #0f172a;
   word-break: break-all;
 }
 
 .share-card {
-  margin-top: 12px;
-  background: #f8fafc;
+  margin-top: 16px;
 }
 
 .share-block {
@@ -254,21 +255,7 @@ export default defineComponent({
   align-items: center;
 }
 
-button {
-  padding: 9px 14px;
-  border: none;
-  border-radius: 6px;
-  background: #2563eb;
-  color: #fff;
-  cursor: pointer;
-}
-
-.warn {
-  background: #b91c1c;
-}
-
-.message {
+.block-gap {
   margin-top: 12px;
-  color: #1f2937;
 }
 </style>

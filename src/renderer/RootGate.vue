@@ -1,50 +1,42 @@
 <template>
-  <section class="auth-center">
-    <el-card shadow="never">
-      <template #header>
-        <h1>我的</h1>
-      </template>
-      <p class="lede">账号登录前不会显示主界面，先完成 RootID 注册 / 登录。</p>
+  <section class="root-gate">
+    <App v-if="showApp" />
 
-      <el-descriptions :column="1" border class="status-grid">
+    <el-card v-else class="gate-card" shadow="never" v-loading="authBusy" element-loading-text="正在登录...">
+      <template #header>
+        <div>
+          <h1>账号入口</h1>
+          <p class="desc">登录前不展示主界面，请先完成 RootID 注册 / 登录。</p>
+        </div>
+      </template>
+
+      <el-descriptions :column="1" border>
         <el-descriptions-item label="是否已注册">{{ rootStatus.initialized ? '是' : '否' }}</el-descriptions-item>
         <el-descriptions-item label="是否已登录">{{ rootStatus.unlocked ? '是' : '否' }}</el-descriptions-item>
         <el-descriptions-item label="RootID">{{ rootStatus.rootId || '未创建' }}</el-descriptions-item>
       </el-descriptions>
 
-      <div class="section-wrap">
+      <div class="auth-wrap">
         <RegisterPage v-if="!rootStatus.initialized" @register="handleRegister" />
-        <LoginPage v-else-if="!rootStatus.unlocked" @login="handleLogin" />
+        <LoginPage v-else-if="!rootStatus.unlocked" :busy="authBusy" @login="handleLogin" />
 
-        <el-card v-else shadow="never" class="inner-card">
-          <template #header>
-            <h2>已登录</h2>
-          </template>
-          <div class="row">
-            <el-button @click="openRootPage">RootID</el-button>
-            <el-button type="danger" plain @click="handleLogout">退出登录</el-button>
-          </div>
-        </el-card>
+        <div v-else class="ready-actions">
+          <el-button type="primary" @click="showApp = true">进入主界面</el-button>
+          <el-button type="danger" plain @click="handleLogout">退出登录</el-button>
+        </div>
       </div>
 
-      <el-alert v-if="message" :title="message" type="info" :closable="false" show-icon class="block-gap" />
-      <el-alert
-        v-if="mnemonicNotice"
-        :title="mnemonicNotice"
-        type="warning"
-        :closable="false"
-        show-icon
-        class="block-gap"
-      />
+      <el-alert v-if="message" :title="message" type="info" :closable="false" show-icon />
+      <el-alert v-if="mnemonicNotice" :title="mnemonicNotice" type="warning" :closable="false" show-icon />
     </el-card>
   </section>
 </template>
 
 <script lang="ts">
 import { defineComponent, onMounted, ref } from 'vue';
-import { ElMessage } from 'element-plus';
-import RegisterPage from './RegisterPage.vue';
-import LoginPage from './LoginPage.vue';
+import App from './App.vue';
+import RegisterPage from './pages/auth/RegisterPage.vue';
+import LoginPage from './pages/auth/LoginPage.vue';
 
 type RootStatus = {
   initialized: boolean;
@@ -53,20 +45,22 @@ type RootStatus = {
 };
 
 export default defineComponent({
-  name: 'RootAuthCenter',
+  name: 'RootGate',
   components: {
+    App,
     RegisterPage,
     LoginPage
   },
-  emits: ['open-root-page', 'update-auth-state'],
-  setup(_, { emit }) {
+  setup() {
     const rootStatus = ref<RootStatus>({ initialized: false, unlocked: false, rootId: null });
+    const showApp = ref(false);
+    const authBusy = ref(false);
     const message = ref('');
     const mnemonicNotice = ref('');
 
     const refreshStatus = async () => {
       rootStatus.value = await window.electronAPI.rootIdentity.status();
-      emit('update-auth-state', rootStatus.value);
+      showApp.value = rootStatus.value.initialized && rootStatus.value.unlocked;
     };
 
     const handleRegister = async (password: string) => {
@@ -74,40 +68,39 @@ export default defineComponent({
         const result = await window.electronAPI.rootIdentity.initialize(password);
         mnemonicNotice.value = `助记词（仅展示一次，请离线保存）：${result.mnemonic}`;
         message.value = `注册成功，RootID=${result.rootId}`;
-        ElMessage.success('注册成功');
         await refreshStatus();
       } catch (error) {
         message.value = `注册失败：${error}`;
-        ElMessage.error(message.value);
       }
     };
 
     const handleLogin = async (password: string) => {
+      authBusy.value = true;
       try {
         const result = await window.electronAPI.rootIdentity.unlock(password);
         message.value = `登录成功，RootID=${result.rootId}`;
-        ElMessage.success('登录成功');
-        await refreshStatus();
+        rootStatus.value = {
+          initialized: true,
+          unlocked: true,
+          rootId: result.rootId
+        };
+        showApp.value = true;
+        void refreshStatus();
       } catch (error) {
         message.value = `登录失败：${error}`;
-        ElMessage.error(message.value);
+      } finally {
+        authBusy.value = false;
       }
     };
 
     const handleLogout = async () => {
       try {
         await window.electronAPI.rootIdentity.lock();
-        message.value = '已退出登录';
-        ElMessage.success(message.value);
+        showApp.value = false;
         await refreshStatus();
       } catch (error) {
         message.value = `退出失败：${error}`;
-        ElMessage.error(message.value);
       }
-    };
-
-    const openRootPage = () => {
-      emit('open-root-page');
     };
 
     onMounted(async () => {
@@ -116,55 +109,47 @@ export default defineComponent({
 
     return {
       rootStatus,
+      showApp,
+      authBusy,
       message,
       mnemonicNotice,
       handleRegister,
       handleLogin,
-      handleLogout,
-      openRootPage
+      handleLogout
     };
   }
 });
 </script>
 
 <style scoped>
-.auth-center {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+.root-gate {
+  min-height: 100vh;
+  padding: 16px;
+  box-sizing: border-box;
+  background: #f5f7fa;
 }
 
-h1,
-h2 {
+.gate-card {
+  max-width: 820px;
+  margin: 0 auto;
+}
+
+h1 {
   margin: 0;
 }
 
-.lede {
-  margin: 0;
+.desc {
+  margin: 8px 0 0;
   color: #64748b;
 }
 
-.status-grid {
-  margin-top: 10px;
+.auth-wrap {
+  margin: 16px 0;
 }
 
-.section-wrap {
-  margin-top: 14px;
-}
-
-.inner-card {
-  border-radius: 10px;
-}
-
-.row {
+.ready-actions {
   display: flex;
-  flex-wrap: wrap;
   gap: 12px;
-  margin-top: 10px;
-  align-items: center;
-}
-
-.block-gap {
-  margin-top: 12px;
+  margin: 8px 0;
 }
 </style>

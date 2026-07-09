@@ -1,82 +1,101 @@
 <template>
-  <section class="card-page">
-    <h1>RootID 页面</h1>
-    <p>RootID 是用户唯一的本地底层主权凭证，所有域身份、签名、授权都由它派生签发。</p>
+  <section class="rootid-page">
+    <el-card shadow="never">
+      <template #header>
+        <h1>RootID 页面</h1>
+      </template>
+      <p class="lede">RootID 是用户唯一的本地底层主权凭证，所有域身份、签名、授权都由它派生签发。</p>
 
-    <section class="info-grid">
-      <article class="info-card">
-        <h2>域身份派生</h2>
-        <p>从 RootID 按 SLIP-0010 Ed25519 硬化路径派生出域身份，用于插件、组织、应用等不同域。</p>
-        <p class="muted">功能：为不同域生成独立公钥与域标识，避免共享根私钥。</p>
-      </article>
-      <article class="info-card">
-        <h2>RootID 签名</h2>
-        <p>对修改数据、跨域授权和治理操作进行 Ed25519 签名，主进程可校验签名真实性。</p>
-        <p class="muted">功能：证明操作由当前登录的 RootID 所属用户发起。</p>
-      </article>
-      <article class="info-card">
-        <h2>助记词</h2>
-        <p>24 词助记词是 RootID 的恢复凭证，当前仅在注册成功时展示一次，不能通过页面重新读取。</p>
-        <p class="muted">功能：设备丢失或迁移时恢复 RootID（需用户自行妥善离线保存）。</p>
-      </article>
-    </section>
+      <el-row :gutter="12" class="info-grid">
+        <el-col :md="8" :sm="24">
+          <el-card shadow="hover">
+            <h2>域身份派生</h2>
+            <p>从 RootID 按 SLIP-0010 Ed25519 硬化路径派生出域身份，用于插件、组织、应用等不同域。</p>
+            <p class="muted">功能：为不同域生成独立公钥与域标识，避免共享根私钥。</p>
+          </el-card>
+        </el-col>
+        <el-col :md="8" :sm="24">
+          <el-card shadow="hover">
+            <h2>RootID 签名</h2>
+            <p>对修改数据、跨域授权和治理操作进行 Ed25519 签名，主进程可校验签名真实性。</p>
+            <p class="muted">功能：证明操作由当前登录的 RootID 所属用户发起。</p>
+          </el-card>
+        </el-col>
+        <el-col :md="8" :sm="24">
+          <el-card shadow="hover">
+            <h2>助记词</h2>
+            <p>24 词助记词是 RootID 的恢复凭证，当前仅在注册成功时展示一次，不能通过页面重新读取。</p>
+            <p class="muted">功能：设备丢失或迁移时恢复 RootID（需用户自行妥善离线保存）。</p>
+          </el-card>
+        </el-col>
+      </el-row>
 
-    <section class="card-section">
-      <h2>RootID 相关信息</h2>
-      <div class="status-grid">
-        <div class="status-item"><strong>是否已注册：</strong>{{ rootStatus.initialized ? '是' : '否' }}</div>
-        <div class="status-item"><strong>是否已登录：</strong>{{ rootStatus.unlocked ? '是' : '否' }}</div>
-        <div class="status-item"><strong>RootID：</strong>{{ rootStatus.rootId || '未创建' }}</div>
-      </div>
+      <el-card shadow="never" class="ops-card">
+        <template #header>
+          <h2>RootID 相关信息</h2>
+        </template>
 
-      <div class="row">
-        <button @click="refreshStatus">刷新状态</button>
-        <button class="warn" @click="handleLogout">退出登录</button>
-      </div>
+        <el-descriptions :column="1" border>
+          <el-descriptions-item label="是否已注册">{{ rootStatus.initialized ? '是' : '否' }}</el-descriptions-item>
+          <el-descriptions-item label="是否已登录">{{ rootStatus.unlocked ? '是' : '否' }}</el-descriptions-item>
+          <el-descriptions-item label="RootID">{{ rootStatus.rootId || '未创建' }}</el-descriptions-item>
+        </el-descriptions>
 
-      <div class="split">
-        <section>
-          <h3>域身份派生</h3>
-          <div class="row">
-            <label>
-              域名
-              <input v-model="domainInput" type="text" placeholder="plugin:demo" />
-            </label>
-            <button @click="deriveDomainIdentity">派生域身份</button>
-          </div>
-          <div v-if="derivedDomain" class="mono-box">
-            <div><strong>domain:</strong> {{ derivedDomain.domain }}</div>
-            <div><strong>domainId:</strong> {{ derivedDomain.domainId }}</div>
-            <div><strong>publicKey:</strong> {{ derivedDomain.publicKey }}</div>
-            <div><strong>path:</strong> {{ derivedDomain.derivationPath }}</div>
-          </div>
-        </section>
+        <div class="row">
+          <el-button @click="refreshStatus">刷新状态</el-button>
+          <el-button type="danger" plain @click="handleLogout">退出登录</el-button>
+        </div>
 
-        <section>
-          <h3>RootID 签名</h3>
-          <div class="row">
-            <label class="flex-grow">
-              待签名文本
-              <input v-model="payloadInput" type="text" placeholder="hello-root-id" />
-            </label>
-            <button @click="signPayload">签名</button>
-          </div>
-          <div v-if="signatureResult" class="mono-box">
-            <div><strong>rootId:</strong> {{ signatureResult.rootId }}</div>
-            <div><strong>payloadHash:</strong> {{ signatureResult.payloadHash }}</div>
-            <div><strong>signature:</strong> {{ signatureResult.signature }}</div>
-          </div>
-        </section>
-      </div>
+        <el-row :gutter="14" class="split">
+          <el-col :md="12" :sm="24">
+            <el-card shadow="never">
+              <template #header>
+                <h3>域身份派生</h3>
+              </template>
+              <el-form label-position="top">
+                <el-form-item label="域名">
+                  <el-input v-model="domainInput" placeholder="plugin:demo" />
+                </el-form-item>
+                <el-button type="primary" @click="deriveDomainIdentity">派生域身份</el-button>
+              </el-form>
+              <div v-if="derivedDomain" class="mono-box">
+                <div><strong>domain:</strong> {{ derivedDomain.domain }}</div>
+                <div><strong>domainId:</strong> {{ derivedDomain.domainId }}</div>
+                <div><strong>publicKey:</strong> {{ derivedDomain.publicKey }}</div>
+                <div><strong>path:</strong> {{ derivedDomain.derivationPath }}</div>
+              </div>
+            </el-card>
+          </el-col>
 
-    </section>
+          <el-col :md="12" :sm="24">
+            <el-card shadow="never">
+              <template #header>
+                <h3>RootID 签名</h3>
+              </template>
+              <el-form label-position="top">
+                <el-form-item label="待签名文本">
+                  <el-input v-model="payloadInput" placeholder="hello-root-id" />
+                </el-form-item>
+                <el-button type="primary" @click="signPayload">签名</el-button>
+              </el-form>
+              <div v-if="signatureResult" class="mono-box">
+                <div><strong>rootId:</strong> {{ signatureResult.rootId }}</div>
+                <div><strong>payloadHash:</strong> {{ signatureResult.payloadHash }}</div>
+                <div><strong>signature:</strong> {{ signatureResult.signature }}</div>
+              </div>
+            </el-card>
+          </el-col>
+        </el-row>
+      </el-card>
 
-    <p class="message">{{ message }}</p>
+      <el-alert v-if="message" :title="message" type="info" :closable="false" show-icon class="block-gap" />
+    </el-card>
   </section>
 </template>
 
 <script lang="ts">
 import { defineComponent, onMounted, ref } from 'vue';
+import { ElMessage } from 'element-plus';
 
 type RootStatus = {
   initialized: boolean;
@@ -120,8 +139,10 @@ export default defineComponent({
         signatureResult.value = null;
         await refreshStatus();
         emit('logout');
+        ElMessage.success(message.value);
       } catch (error) {
         message.value = `退出失败：${error}`;
+        ElMessage.error(message.value);
       }
     };
 
@@ -129,8 +150,10 @@ export default defineComponent({
       try {
         derivedDomain.value = await window.electronAPI.rootIdentity.deriveDomain(domainInput.value.trim());
         message.value = `已派生域身份：${derivedDomain.value.domain}`;
+        ElMessage.success(message.value);
       } catch (error) {
         message.value = `派生失败：${error}`;
+        ElMessage.error(message.value);
       }
     };
 
@@ -138,8 +161,10 @@ export default defineComponent({
       try {
         signatureResult.value = await window.electronAPI.rootIdentity.sign(payloadInput.value);
         message.value = '签名成功';
+        ElMessage.success(message.value);
       } catch (error) {
         message.value = `签名失败：${error}`;
+        ElMessage.error(message.value);
       }
     };
 
@@ -168,49 +193,33 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.card-page {
-  padding: 16px;
-  border: 1px solid #ddd;
-  border-radius: 10px;
-  background: #fff;
+.rootid-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+}
+
+.lede {
+  margin: 0;
+  color: #64748b;
 }
 
 .info-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px;
-  margin: 16px 0;
-}
-
-.info-card {
-  padding: 14px;
-  border-radius: 10px;
-  background: #f8fafc;
-  border: 1px solid #e5e7eb;
+  margin-top: 16px;
 }
 
 .muted {
   color: #6b7280;
 }
 
-.card-section {
-  padding: 14px;
-  border: 1px solid #ddd;
-  border-radius: 10px;
-  background: #fff;
-}
-
-.status-grid {
-  margin-top: 10px;
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 8px;
-}
-
-.status-item {
-  padding: 8px;
-  border-radius: 6px;
-  background: #f7fafc;
+.ops-card {
+  margin-top: 14px;
 }
 
 .row {
@@ -222,35 +231,7 @@ export default defineComponent({
 }
 
 .split {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 14px;
   margin-top: 16px;
-}
-
-.flex-grow {
-  flex: 1;
-}
-
-input {
-  margin-left: 8px;
-  padding: 8px;
-  border: 1px solid #d0d7de;
-  border-radius: 6px;
-  min-width: 240px;
-}
-
-button {
-  padding: 9px 14px;
-  border: none;
-  border-radius: 6px;
-  background: #2563eb;
-  color: #fff;
-  cursor: pointer;
-}
-
-.warn {
-  background: #b91c1c;
 }
 
 .mono-box {
@@ -265,17 +246,7 @@ button {
   overflow-x: auto;
 }
 
-.message {
+.block-gap {
   margin-top: 12px;
-  color: #1f2937;
-}
-
-.secret-notice {
-  margin-top: 8px;
-  padding: 10px;
-  border-radius: 8px;
-  background: #fff7ed;
-  color: #9a3412;
-  word-break: break-word;
 }
 </style>
