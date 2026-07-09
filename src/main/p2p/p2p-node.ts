@@ -6,7 +6,6 @@ import { getOrCreateLibp2pPrivateKey } from './identity-store';
 import { PeerActivityStore } from './peer-activity-store';
 import { buildDialTargets, extractPeerId, normalizePeerIdList } from './peer-targets';
 import { OrgShareSyncService } from './org-share-sync';
-import { syncCurrentRootOrganizationsToPeer } from './organization-bootstrap-sync';
 import { createPubsubMessageHandler } from './pubsub-message-handler';
 import type { LocalP2PNodeInfo, P2PIdentityContext, P2PMessageBody, PeerNodeInfo } from './types';
 const runtimeImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
@@ -114,13 +113,6 @@ export class P2PNode {
       try {
         await this.connectPeer(candidate);
         await this.rememberPeerNodeInfo(candidate, 'success');
-        await syncCurrentRootOrganizationsToPeer({
-          db: this.db,
-          currentRootId,
-          targetPeer: candidate,
-          syncOrganizationToMember: (nodeInfo, targetRootId, organization) =>
-            this.orgShare.syncOrganizationToMember(nodeInfo, targetRootId, organization)
-        });
         await this.orgShare.pullOrganizationsForCurrentRootFromPeer(candidate);
         connected += 1;
       } catch (error) {
@@ -339,7 +331,15 @@ export class P2PNode {
   }
 
   /** 对外组织反熵拉取入口（委托给 orgShare 服务）。 */
-  async pullOrganizationsFromPeer(nodeInfo: PeerNodeInfo): Promise<{ checked: number; synced: number; removed: number }> {
+  async pullOrganizationsFromPeer(nodeInfo: PeerNodeInfo): Promise<{
+    checked: number;
+    synced: number;
+    removed: number;
+    pushAttempted: number;
+    pushed: number;
+    pulled: number;
+    skipped: number;
+  }> {
     return await this.orgShare.pullOrganizationsForCurrentRootFromPeer(nodeInfo);
   }
 

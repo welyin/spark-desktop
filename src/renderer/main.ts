@@ -19,6 +19,7 @@ const RootGate = defineComponent({
 	setup() {
 		const rootStatus = ref<RootStatus>({ initialized: false, unlocked: false, rootId: null });
 		const showApp = ref(false);
+		const authBusy = ref(false);
 		const message = ref('');
 		const mnemonicNotice = ref('');
 
@@ -39,12 +40,21 @@ const RootGate = defineComponent({
 		};
 
 		const handleLogin = async (password: string) => {
+			authBusy.value = true;
 			try {
 				const result = await window.electronAPI.rootIdentity.unlock(password);
 				message.value = `登录成功，RootID=${result.rootId}`;
-				await refreshStatus();
+				rootStatus.value = {
+					initialized: true,
+					unlocked: true,
+					rootId: result.rootId
+				};
+				showApp.value = true;
+				void refreshStatus();
 			} catch (error) {
 				message.value = `登录失败：${error}`;
+			} finally {
+				authBusy.value = false;
 			}
 		};
 
@@ -76,19 +86,38 @@ const RootGate = defineComponent({
 			const authNode = !rootStatus.value.initialized
 				? h(RegisterPage, { onRegister: handleRegister })
 				: !rootStatus.value.unlocked
-					? h(LoginPage, { onLogin: handleLogin })
+					? h(LoginPage, { onLogin: handleLogin, busy: authBusy.value })
 					: h('div', { class: 'row' }, [
 						h('button', { onClick: () => { showApp.value = true; } }, '进入主界面'),
 						h('button', { class: 'warn', onClick: handleLogout }, '退出登录')
 					]);
 
-			return h('section', { class: 'root-gate' }, [
+			return h('section', {
+				class: 'root-gate',
+				style: {
+					position: 'relative',
+					cursor: authBusy.value ? 'wait' : 'default'
+				}
+			}, [
 				h('h1', null, '账号入口'),
 				h('p', null, '登录前不展示主界面，请先完成 RootID 注册 / 登录。'),
 				statusGrid,
 				authNode,
 				h('p', { class: 'message' }, message.value),
-				mnemonicNotice.value ? h('p', { class: 'secret-notice' }, mnemonicNotice.value) : null
+				mnemonicNotice.value ? h('p', { class: 'secret-notice' }, mnemonicNotice.value) : null,
+				authBusy.value
+					? h('div', {
+						style: {
+							position: 'absolute',
+							inset: '0',
+							background: 'rgba(255,255,255,0.35)',
+							backdropFilter: 'blur(1px)',
+							zIndex: '10',
+							pointerEvents: 'all',
+							cursor: 'wait'
+						}
+					})
+					: null
 			]);
 		};
 	}

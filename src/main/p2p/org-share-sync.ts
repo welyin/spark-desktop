@@ -49,7 +49,9 @@ export class OrgShareSyncService {
       identityContext: this.deps.identityContext,
       runtimeImport: this.deps.runtimeImport,
       getNode: this.deps.getNode,
-      connectPeer: this.deps.connectPeer
+      connectPeer: this.deps.connectPeer,
+      syncOrganizationToMember: async (nodeInfo, targetRootId, organization) =>
+        this.syncOrganizationToMember(nodeInfo, targetRootId, organization)
     });
   }
 
@@ -82,7 +84,7 @@ export class OrgShareSyncService {
     this.sessionState.markAck(syncId);
   }
 
-  async pullOrganizationsForCurrentRootFromPeer(nodeInfo: PeerNodeInfo): Promise<{ checked: number; synced: number; removed: number }> {
+  async pullOrganizationsForCurrentRootFromPeer(nodeInfo: PeerNodeInfo): Promise<Awaited<ReturnType<OrgPullSyncService['reconcileFromPeer']>>> {
     return await this.pullSync.reconcileFromPeer(nodeInfo);
   }
 

@@ -20,6 +20,15 @@ const api = {
     start: () => ipcRenderer.invoke('p2p-start'),
     stop: () => ipcRenderer.invoke('p2p-stop'),
     broadcast: (topic, message) => ipcRenderer.invoke('p2p-broadcast', topic, message),
+    syncPeerOrganizations: (targetPeer) => {
+      const payload = {
+        peerId: targetPeer && targetPeer.peerId ? targetPeer.peerId : undefined,
+        addresses: Array.isArray(targetPeer && targetPeer.addresses)
+          ? targetPeer.addresses.map((item) => String(item))
+          : []
+      };
+      return ipcRenderer.invoke('p2p-sync-peer-organizations', payload);
+    },
     info: () => ipcRenderer.invoke('p2p-info')
   },
   plugin: {

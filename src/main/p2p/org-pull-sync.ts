@@ -1,10 +1,11 @@
 import { DIRECT_ORG_SHARE_PROTOCOL, ORG_META_PREFIX } from './constants';
 import { buildDialTargets } from './peer-targets';
-import { mergeOrganizationSyncSnapshot, type OrganizationSyncVersions } from '../organization/sync';
+import { buildOrganizationSyncSnapshot, isOrganizationSyncStale, mergeOrganizationSyncSnapshot, type OrganizationSyncVersions } from '../organization/sync';
 import { normalizeIncomingSnapshot } from './org-share-snapshot';
 import { parseJsonSafely, readStreamAsString, resolveProtocolStream, writeStringToStream } from './stream-utils';
 import type { LevelDB } from '../db/base';
 import type { P2PIdentityContext, PeerNodeInfo } from './types';
+import type { OrganizationRecord } from '../organization';
 
 type RuntimeImport = (specifier: string) => Promise<any>;
 
@@ -14,6 +15,7 @@ type OrgPullSyncDeps = {
   runtimeImport: RuntimeImport;
   getNode: () => any | null;
   connectPeer: (nodeInfo: PeerNodeInfo) => Promise<void>;
+  syncOrganizationToMember?: (nodeInfo: PeerNodeInfo, targetRootId: string, organization: OrganizationRecord) => Promise<void>;
 };
 
 type PullListRequest = {
@@ -121,11 +123,20 @@ export class OrgPullSyncService {
       .filter((record): record is any => record !== null);
   }
 
-  private async listLocalRelatedOrgIds(currentRootId: string): Promise<string[]> {
+  private async listLocalRelatedOrganizations(currentRootId: string): Promise<Map<string, OrganizationRecord>> {
     const organizations = await this.listAllOrganizations();
-    return organizations
+    const related = organizations
       .filter((record) => Array.isArray(record.members) && record.members.some((member: any) => member?.rootId === currentRootId))
-      .map((record) => String(record.orgId));
+      .map((record) => record as OrganizationRecord);
+
+    const byOrgId = new Map<string, OrganizationRecord>();
+    for (const record of related) {
+      if (record.orgId) {
+        byOrgId.set(String(record.orgId), record);
+      }
+    }
+
+    return byOrgId;
   }
 
   async handleDirectRequest(request: PullRequest, incoming: any): Promise<PullListResponse | PullOrgResponse> {
@@ -230,10 +241,22 @@ export class OrgPullSyncService {
     return null;
   }
 
-  async reconcileFromPeer(nodeInfo: PeerNodeInfo): Promise<{ checked: number; synced: number; removed: number }> {
+  private resolveLocalVersions(record: OrganizationRecord): OrganizationSyncVersions {
+    return record.sync?.versions ?? buildOrganizationSyncSnapshot(record).sync;
+  }
+
+  async reconcileFromPeer(nodeInfo: PeerNodeInfo): Promise<{
+    checked: number;
+    synced: number;
+    removed: number;
+    pushAttempted: number;
+    pushed: number;
+    pulled: number;
+    skipped: number;
+  }> {
     const currentRootId = await this.deps.identityContext?.getCurrentRootId();
     if (!currentRootId) {
-      return { checked: 0, synced: 0, removed: 0 };
+      return { checked: 0, synced: 0, removed: 0, pushAttempted: 0, pushed: 0, pulled: 0, skipped: 0 };
     }
 
     await this.deps.connectPeer(nodeInfo);
@@ -245,17 +268,75 @@ export class OrgPullSyncService {
       payload: { requesterRootId: currentRootId, requesterPeerId }
     });
 
-    const listedOrgIds = listResponse?.type === 'org-pull-list-response' && listResponse.ok
-      ? (listResponse.organizations ?? []).map((item) => item.orgId)
-      : [];
+    const remoteVersions = new Map<string, OrganizationSyncVersions | undefined>();
+    if (listResponse?.type === 'org-pull-list-response' && listResponse.ok) {
+      for (const item of listResponse.organizations ?? []) {
+        remoteVersions.set(item.orgId, item.sync);
+      }
+    }
 
-    const localOrgIds = await this.listLocalRelatedOrgIds(currentRootId);
-    const targetOrgIds = Array.from(new Set([...localOrgIds, ...listedOrgIds]));
+    const localOrganizations = await this.listLocalRelatedOrganizations(currentRootId);
+    const targetOrgIds = Array.from(new Set([...localOrganizations.keys(), ...remoteVersions.keys()]));
 
-    let synced = 0;
+    let pushed = 0;
+    let pulled = 0;
+    let pushAttempted = 0;
+    let skipped = 0;
     let removed = 0;
 
     for (const orgId of targetOrgIds) {
+      const local = localOrganizations.get(orgId);
+      const remote = remoteVersions.get(orgId);
+
+      if (local && !remote) {
+        if (this.deps.syncOrganizationToMember) {
+          pushAttempted += 1;
+          try {
+            await this.deps.syncOrganizationToMember(nodeInfo, currentRootId, local);
+            pushed += 1;
+          } catch (error) {
+            console.warn('[p2p][org-pull] version-plan push failed', {
+              orgId,
+              peerId: nodeInfo.peerId,
+              error: String(error)
+            });
+          }
+        } else {
+          skipped += 1;
+        }
+        continue;
+      }
+
+      if (local && remote) {
+        const localVersions = this.resolveLocalVersions(local);
+        const remoteNewer = isOrganizationSyncStale(localVersions, remote);
+        const localNewer = isOrganizationSyncStale(remote, localVersions);
+
+        if (localNewer && !remoteNewer) {
+          if (this.deps.syncOrganizationToMember) {
+            pushAttempted += 1;
+            try {
+              await this.deps.syncOrganizationToMember(nodeInfo, currentRootId, local);
+              pushed += 1;
+            } catch (error) {
+              console.warn('[p2p][org-pull] version-plan push failed', {
+                orgId,
+                peerId: nodeInfo.peerId,
+                error: String(error)
+              });
+            }
+          } else {
+            skipped += 1;
+          }
+          continue;
+        }
+
+        if (!localNewer && !remoteNewer) {
+          skipped += 1;
+          continue;
+        }
+      }
+
       const response = await this.requestDirect(nodeInfo, {
         type: 'org-pull-org',
         payload: {
@@ -289,14 +370,18 @@ export class OrgPullSyncService {
         const existing = raw ? parseOrganizationRecord(raw) : null;
         const merged = mergeOrganizationSyncSnapshot(existing, normalizeIncomingSnapshot(response.organization));
         await this.deps.db.put(`${ORG_META_PREFIX}${orgId}`, JSON.stringify(merged));
-        synced += 1;
+        pulled += 1;
       }
     }
 
     return {
       checked: targetOrgIds.length,
-      synced,
-      removed
+      synced: pulled,
+      removed,
+      pushAttempted,
+      pushed,
+      pulled,
+      skipped
     };
   }
 }

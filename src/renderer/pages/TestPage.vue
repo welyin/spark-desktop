@@ -145,10 +145,11 @@ export default defineComponent({
       syncingNodeKey.value = node.nodeKey;
       nodeMessage.value = '';
       try {
-        const result = await window.electronAPI.p2p.syncPeerOrganizations({
+        const targetPeer = {
           peerId: node.peerId ?? undefined,
-          addresses: node.addresses
-        });
+          addresses: [...node.addresses]
+        };
+        const result = await window.electronAPI.p2p.syncPeerOrganizations(targetPeer);
         nodeMessage.value = `节点同步完成：推送尝试 ${result.attempted} / 成功 ${result.synced}；拉取检查 ${result.pullChecked} / 更新 ${result.pullSynced}；移除本地组织 ${result.removed}`;
       } catch (error) {
         nodeMessage.value = `节点同步失败：${error}`;

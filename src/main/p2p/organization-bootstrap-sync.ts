@@ -46,8 +46,18 @@ export async function syncCurrentRootOrganizationsToPeer(deps: BootstrapOrgSyncD
 
   let synced = 0;
   for (const organization of organizations) {
-    await deps.syncOrganizationToMember(deps.targetPeer, deps.currentRootId, organization);
-    synced += 1;
+    try {
+      await deps.syncOrganizationToMember(deps.targetPeer, deps.currentRootId, organization);
+      synced += 1;
+    } catch (error) {
+      // Best-effort push: keep syncing remaining orgs and let pull anti-entropy reconcile later.
+      console.warn('[p2p][bootstrap-sync] skip failed organization push', {
+        orgId: organization.orgId,
+        targetRootId: deps.currentRootId,
+        peerId: deps.targetPeer.peerId,
+        error: String(error)
+      });
+    }
   }
 
   return {

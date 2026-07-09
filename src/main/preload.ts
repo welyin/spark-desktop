@@ -178,7 +178,15 @@ const api = {
     start: () => ipcRenderer.invoke('p2p-start'),
     stop: () => ipcRenderer.invoke('p2p-stop'),
     broadcast: (topic: string, message: any) => ipcRenderer.invoke('p2p-broadcast', topic, message),
-    syncPeerOrganizations: (targetPeer: { peerId?: string; addresses: string[] }) => ipcRenderer.invoke('p2p-sync-peer-organizations', targetPeer),
+    syncPeerOrganizations: (targetPeer: { peerId?: string; addresses: string[] }) => {
+      const payload = {
+        peerId: targetPeer?.peerId,
+        addresses: Array.isArray(targetPeer?.addresses)
+          ? targetPeer.addresses.map((item) => String(item))
+          : []
+      };
+      return ipcRenderer.invoke('p2p-sync-peer-organizations', payload);
+    },
     info: () => ipcRenderer.invoke('p2p-info')
   },
   plugin: {

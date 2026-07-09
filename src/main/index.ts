@@ -2,7 +2,6 @@ import { app, BrowserWindow, ipcMain, IpcMainInvokeEvent } from 'electron';
 import path from 'path';
 import { levelDB, ensureSystemDomainInitialized, parseDomainFromKey, verifyAccess, getEvidenceHeadHash, verifyEvidenceChain, getEvidenceHeight } from './db';
 import { initP2PNode, getP2PNode, isP2PInitialized } from './p2p/index';
-import { syncCurrentRootOrganizationsToPeer } from './p2p/organization-bootstrap-sync';
 import { registerDomain, unregisterDomain, getDomain, isSystemDomain, isValidPluginDomain } from './domain-registry';
 import { OrganizationService } from './organization/index';
 import { rootIdentityManager } from './identity';
@@ -256,14 +255,17 @@ app.whenReady().then(async () => {
     requireSystemDomain(event);
     const result = await rootIdentityManager.unlock(password);
 
-    try {
-      await ensureCoreServicesStarted();
-      if (isP2PInitialized() && getP2PNode().isStarted()) {
-        await getP2PNode().bootstrapOrganizationNetworkOnLogin();
+    // 登录成功后立即返回给 UI，后台异步执行节点重连与数据对账。
+    void (async () => {
+      try {
+        await ensureCoreServicesStarted();
+        if (isP2PInitialized() && getP2PNode().isStarted()) {
+          await getP2PNode().bootstrapOrganizationNetworkOnLogin();
+        }
+      } catch (error) {
+        console.warn('[main] failed to bootstrap organization peers after login', error);
       }
-    } catch (error) {
-      console.warn('[main] failed to bootstrap organization peers after login', error);
-    }
+    })();
 
     return result;
   });
@@ -471,21 +473,15 @@ app.whenReady().then(async () => {
       throw new Error('Target peer addresses are required');
     }
 
-    const pushResult = await syncCurrentRootOrganizationsToPeer({
-      db: levelDB,
-      currentRootId: status.rootId,
-      targetPeer,
-      syncOrganizationToMember: (nodeInfo, targetRootId, organization) =>
-        getP2PNode().syncOrganizationToMember(nodeInfo, targetRootId, organization)
-    });
-
     const pullResult = await getP2PNode().pullOrganizationsFromPeer(targetPeer);
 
     return {
-      ...pushResult,
+      attempted: pullResult.pushAttempted,
+      synced: pullResult.pushed,
       pullChecked: pullResult.checked,
-      pullSynced: pullResult.synced,
-      removed: pullResult.removed
+      pullSynced: pullResult.pulled,
+      removed: pullResult.removed,
+      skipped: pullResult.skipped
     };
   });
 });

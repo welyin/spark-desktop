@@ -23,10 +23,15 @@ import { defineComponent, ref } from 'vue';
 
 export default defineComponent({
   name: 'LoginPage',
+  props: {
+    busy: {
+      type: Boolean,
+      default: false
+    }
+  },
   emits: ['login'],
-  setup(_, { emit }) {
+  setup(props, { emit }) {
     const password = ref('');
-    const busy = ref(false);
     const message = ref('');
 
     const submit = async () => {
@@ -35,18 +40,16 @@ export default defineComponent({
         return;
       }
 
-      busy.value = true;
-      message.value = '';
-      try {
-        emit('login', password.value);
-      } finally {
-        busy.value = false;
+      if (props.busy) {
+        return;
       }
+
+      message.value = '';
+      emit('login', password.value);
     };
 
     return {
       password,
-      busy,
       message,
       submit
     };
