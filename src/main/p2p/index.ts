@@ -398,11 +398,15 @@ export class P2PNode {
       }
     };
 
-      // 处理入站消息（兼容 EventTarget 与 EventEmitter 两种接口）
-      if (typeof this.node.services.pubsub.addEventListener === 'function') {
-        this.node.services.pubsub.addEventListener('message', handleMessage);
-      } else if (typeof this.node.services.pubsub.on === 'function') {
+      // 处理入站消息（优先 EventEmitter，兼容 EventTarget）
+      if (typeof this.node.services.pubsub.on === 'function') {
         this.node.services.pubsub.on('message', handleMessage);
+        console.log('[p2p] pubsub message handler bound via on(message)');
+      } else if (typeof this.node.services.pubsub.addEventListener === 'function') {
+        this.node.services.pubsub.addEventListener('message', handleMessage);
+        console.log('[p2p] pubsub message handler bound via addEventListener(message)');
+      } else {
+        console.warn('[p2p] pubsub message handler binding failed: no supported API');
       }
 
       console.log('[p2p] node started, peerId=', this.nodeId);
