@@ -61,6 +61,72 @@ export class P2PNode {
     await new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  private normalizePeerIdList(items: any[]): string[] {
+    return items
+      .map((item) => {
+        if (!item) return '';
+        if (typeof item === 'string') return item;
+        if (typeof item.toString === 'function') return item.toString();
+        return '';
+      })
+      .filter((item) => item.length > 0);
+  }
+
+  private extractPeerId(nodeInfo: PeerNodeInfo): string | null {
+    const direct = nodeInfo.peerId?.trim();
+    if (direct) {
+      return direct;
+    }
+
+    for (const address of nodeInfo.addresses) {
+      const match = address.match(/\/p2p\/([^/]+)$/);
+      if (match?.[1]) {
+        return match[1];
+      }
+    }
+
+    return null;
+  }
+
+  private getTopicSubscribers(topic: string): string[] {
+    if (!this.node?.services?.pubsub) {
+      return [];
+    }
+    const pubsub = this.node.services.pubsub as any;
+    if (typeof pubsub.getSubscribers !== 'function') {
+      return [];
+    }
+
+    const subscribers = pubsub.getSubscribers(topic);
+    return Array.isArray(subscribers) ? this.normalizePeerIdList(subscribers) : [];
+  }
+
+  private async waitForTopicSubscriber(topic: string, targetPeerId: string | null, timeoutMs: number): Promise<void> {
+    if (!targetPeerId) {
+      return;
+    }
+
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const subscribers = this.getTopicSubscribers(topic);
+      if (subscribers.includes(targetPeerId)) {
+        console.log('[p2p][org-share] target subscriber ready', {
+          topic,
+          targetPeerId,
+          subscribers
+        });
+        return;
+      }
+      await this.delay(200);
+    }
+
+    console.warn('[p2p][org-share] target subscriber not ready before timeout', {
+      topic,
+      targetPeerId,
+      subscribers: this.getTopicSubscribers(topic)
+    });
+  }
+
   constructor(
     private readonly db: LevelDB,
     private readonly identityContext?: P2PIdentityContext
@@ -134,7 +200,8 @@ export class P2PNode {
           // runtime is validated by startup smoke tests.
           pubsub: gossipsub({
             emitSelf: false,
-            allowPublishToZeroTopicPeers: true
+            allowPublishToZeroTopicPeers: true,
+            floodPublish: true
           }) as any
         }
       });
@@ -146,6 +213,7 @@ export class P2PNode {
       // 订阅统一的同步 topic
       const syncTopic = 'spark-sync';
       await this.node.services.pubsub.subscribe(syncTopic);
+      console.log('[p2p] subscribed topic', syncTopic);
 
       const handleMessage = async (raw: any) => {
       const msg = raw?.detail ?? raw;
@@ -336,14 +404,22 @@ export class P2PNode {
 
   async syncOrganizationToMember(nodeInfo: PeerNodeInfo, targetRootId: string, organization: any): Promise<void> {
     if (!this.node) throw new Error('p2p node not started');
+    const syncTopic = 'spark-sync';
+    const targetPeerId = this.extractPeerId(nodeInfo);
     console.log('[p2p][org-share] start sync to member', {
       orgId: organization?.orgId,
       targetRootId,
-      peerId: nodeInfo.peerId,
+      peerId: targetPeerId,
       addresses: nodeInfo.addresses
     });
 
     await this.connectPeer(nodeInfo);
+    await this.waitForTopicSubscriber(syncTopic, targetPeerId, 5000);
+    console.log('[p2p][org-share] publishing with subscriber snapshot', {
+      topic: syncTopic,
+      targetPeerId,
+      subscribers: this.getTopicSubscribers(syncTopic)
+    });
 
     const payload = {
       type: 'org-share',
@@ -365,7 +441,7 @@ export class P2PNode {
       if (waitMs > 0) {
         await this.delay(waitMs);
       }
-      await this.broadcast('spark-sync', payload);
+      await this.broadcast(syncTopic, payload);
       console.log('[p2p][org-share] published', {
         orgId: organization?.orgId,
         targetRootId,
