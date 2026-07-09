@@ -339,6 +339,26 @@ export class P2PNode {
     };
   }
 
+  /**
+   * 安全解析 JSON 文本，解析失败时返回 null 并打印上下文日志。
+   */
+  private parseJsonSafely(text: string, context: string): any | null {
+    const normalized = text.trim();
+    if (normalized.length === 0) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(normalized);
+    } catch (error) {
+      console.warn(`[p2p][json] invalid ${context}`, {
+        preview: normalized.slice(0, 120),
+        error: String(error)
+      });
+      return null;
+    }
+  }
+
   // 直连同步优先路径：连接已建立后直接 dialProtocol，拿到同步响应即视为成功。
   private async tryDirectOrgShare(nodeInfo: PeerNodeInfo, payload: { targetRootId: string; syncId: string; organization: any }): Promise<boolean> {
     if (!this.node) {
@@ -367,7 +387,14 @@ export class P2PNode {
         }
         await this.writeStringToStream(stream, JSON.stringify({ type: 'org-share', payload }));
         const responseText = await this.readStreamAsString(stream, 4000);
-        const response = JSON.parse(responseText || '{}') as { ok?: boolean; syncId?: string; reason?: string };
+        const response = this.parseJsonSafely(responseText, 'direct response') as { ok?: boolean; syncId?: string; reason?: string } | null;
+        if (!response) {
+          console.warn('[p2p][org-share][direct] empty/invalid response', {
+            target,
+            syncId: payload.syncId
+          });
+          continue;
+        }
         if (response.ok && response.syncId === payload.syncId) {
           console.log('[p2p][org-share][direct] delivery confirmed by direct response', {
             syncId: payload.syncId,
@@ -505,7 +532,11 @@ export class P2PNode {
 
           try {
             const requestText = await this.readStreamAsString(stream, 4000);
-            const request = JSON.parse(requestText || '{}') as { type?: string; payload?: any };
+            const request = this.parseJsonSafely(requestText, 'direct request') as { type?: string; payload?: any } | null;
+            if (!request) {
+              await this.writeStringToStream(stream, JSON.stringify({ ok: false, reason: 'empty or invalid json' }));
+              return;
+            }
             console.log('[p2p][org-share][direct] request received', {
               type: request.type,
               syncId: request.payload?.syncId,
