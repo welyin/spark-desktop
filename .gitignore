@@ -1,0 +1,4 @@
+node_modules
+src/renderer/dist
+.DS_Store
+.vscode
