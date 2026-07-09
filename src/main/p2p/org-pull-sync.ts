@@ -1,0 +1,302 @@
+import { DIRECT_ORG_SHARE_PROTOCOL, ORG_META_PREFIX } from './constants';
+import { buildDialTargets } from './peer-targets';
+import { mergeOrganizationSyncSnapshot, type OrganizationSyncVersions } from '../organization/sync';
+import { normalizeIncomingSnapshot } from './org-share-snapshot';
+import { parseJsonSafely, readStreamAsString, resolveProtocolStream, writeStringToStream } from './stream-utils';
+import type { LevelDB } from '../db/base';
+import type { P2PIdentityContext, PeerNodeInfo } from './types';
+
+type RuntimeImport = (specifier: string) => Promise<any>;
+
+type OrgPullSyncDeps = {
+  db: LevelDB;
+  identityContext?: P2PIdentityContext;
+  runtimeImport: RuntimeImport;
+  getNode: () => any | null;
+  connectPeer: (nodeInfo: PeerNodeInfo) => Promise<void>;
+};
+
+type PullListRequest = {
+  type: 'org-pull-list';
+  payload: {
+    requesterRootId: string;
+    requesterPeerId?: string;
+  };
+};
+
+type PullOrgRequest = {
+  type: 'org-pull-org';
+  payload: {
+    requesterRootId: string;
+    requesterPeerId?: string;
+    orgId: string;
+  };
+};
+
+type PullRequest = PullListRequest | PullOrgRequest;
+
+type PullListResponse = {
+  ok: boolean;
+  type: 'org-pull-list-response';
+  organizations?: Array<{ orgId: string; sync?: OrganizationSyncVersions }>;
+  reason?: string;
+};
+
+type PullOrgResponse = {
+  ok: boolean;
+  type: 'org-pull-org-response';
+  orgId: string;
+  status?: 'member' | 'removed';
+  organization?: any;
+  reason?: string;
+};
+
+function parseOrganizationRecord(raw: string): any | null {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function extractIncomingPeerId(incoming: any): string | null {
+  const candidates = [
+    incoming?.connection?.remotePeer,
+    incoming?.detail?.connection?.remotePeer,
+    incoming?.detail?.remotePeer,
+    incoming?.remotePeer,
+    incoming?.from
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+    if (typeof candidate === 'string' && candidate.trim().length > 0) {
+      return candidate.trim();
+    }
+    if (typeof candidate.toString === 'function') {
+      const text = candidate.toString();
+      if (typeof text === 'string' && text.trim().length > 0) {
+        return text.trim();
+      }
+    }
+  }
+
+  return null;
+}
+
+function memberAuthStatus(record: any, requesterRootId: string, requesterPeerId?: string | null): { ok: boolean; reason?: string } {
+  const members = Array.isArray(record?.members) ? record.members : [];
+  const member = members.find((item: any) => item?.rootId === requesterRootId);
+  if (!member) {
+    return { ok: false, reason: 'not-member' };
+  }
+
+  const expectedPeerId = member?.nodeInfo?.peerId?.trim?.() || '';
+  if (!expectedPeerId) {
+    return { ok: true };
+  }
+
+  const actualPeerId = requesterPeerId?.trim() || '';
+  if (!actualPeerId || actualPeerId !== expectedPeerId) {
+    return { ok: false, reason: 'peer-mismatch' };
+  }
+
+  return { ok: true };
+}
+
+export class OrgPullSyncService {
+  constructor(private readonly deps: OrgPullSyncDeps) {}
+
+  private async listAllOrganizations(): Promise<any[]> {
+    const rows = await this.deps.db.queryRange({
+      prefix: ORG_META_PREFIX,
+      start: ORG_META_PREFIX,
+      end: `${ORG_META_PREFIX}\xFF`
+    });
+
+    return rows
+      .map((row) => parseOrganizationRecord(row.value))
+      .filter((record): record is any => record !== null);
+  }
+
+  private async listLocalRelatedOrgIds(currentRootId: string): Promise<string[]> {
+    const organizations = await this.listAllOrganizations();
+    return organizations
+      .filter((record) => Array.isArray(record.members) && record.members.some((member: any) => member?.rootId === currentRootId))
+      .map((record) => String(record.orgId));
+  }
+
+  async handleDirectRequest(request: PullRequest, incoming: any): Promise<PullListResponse | PullOrgResponse> {
+    const requesterRootId = request?.payload?.requesterRootId?.trim?.();
+    if (!requesterRootId) {
+      if (request.type === 'org-pull-org') {
+        return { ok: false, type: 'org-pull-org-response', orgId: request.payload?.orgId || '', reason: 'missing-requester-root' };
+      }
+      return { ok: false, type: 'org-pull-list-response', reason: 'missing-requester-root' };
+    }
+
+    const remotePeerId = extractIncomingPeerId(incoming);
+    const declaredPeerId = request.payload.requesterPeerId;
+    const requesterPeerId = declaredPeerId || remotePeerId;
+
+    if (request.type === 'org-pull-list') {
+      const organizations = await this.listAllOrganizations();
+      const visible = organizations
+        .filter((record) => memberAuthStatus(record, requesterRootId, requesterPeerId).ok)
+        .map((record) => ({
+          orgId: String(record.orgId),
+          sync: record.sync?.versions
+        }));
+
+      return {
+        ok: true,
+        type: 'org-pull-list-response',
+        organizations: visible
+      };
+    }
+
+    const orgId = request.payload.orgId?.trim?.();
+    if (!orgId) {
+      return { ok: false, type: 'org-pull-org-response', orgId: '', reason: 'missing-org-id' };
+    }
+
+    const raw = await this.deps.db.get(`${ORG_META_PREFIX}${orgId}`);
+    if (!raw) {
+      return {
+        ok: true,
+        type: 'org-pull-org-response',
+        orgId,
+        status: 'removed',
+        reason: 'org-not-found'
+      };
+    }
+
+    const record = parseOrganizationRecord(raw);
+    if (!record) {
+      return { ok: false, type: 'org-pull-org-response', orgId, reason: 'invalid-org-record' };
+    }
+
+    const auth = memberAuthStatus(record, requesterRootId, requesterPeerId);
+    if (!auth.ok) {
+      return {
+        ok: true,
+        type: 'org-pull-org-response',
+        orgId,
+        status: 'removed',
+        reason: auth.reason || 'not-member'
+      };
+    }
+
+    const snapshot = normalizeIncomingSnapshot(record);
+    return {
+      ok: true,
+      type: 'org-pull-org-response',
+      orgId,
+      status: 'member',
+      organization: snapshot
+    };
+  }
+
+  private async requestDirect(nodeInfo: PeerNodeInfo, request: PullRequest): Promise<PullListResponse | PullOrgResponse | null> {
+    const node = this.deps.getNode();
+    if (!node) {
+      throw new Error('p2p node not started');
+    }
+
+    const { multiaddr } = await this.deps.runtimeImport('@multiformats/multiaddr');
+    const dialTargets = buildDialTargets(nodeInfo);
+
+    for (const target of dialTargets) {
+      try {
+        const streamResult = await node.dialProtocol(multiaddr(target), DIRECT_ORG_SHARE_PROTOCOL);
+        const stream = resolveProtocolStream(streamResult);
+        if (!stream) {
+          continue;
+        }
+
+        await writeStringToStream(stream, JSON.stringify(request));
+        const responseText = await readStreamAsString(stream, 4000);
+        const response = parseJsonSafely(responseText, 'pull response') as PullListResponse | PullOrgResponse | null;
+        if (response) {
+          return response;
+        }
+      } catch {
+        // try next address
+      }
+    }
+
+    return null;
+  }
+
+  async reconcileFromPeer(nodeInfo: PeerNodeInfo): Promise<{ checked: number; synced: number; removed: number }> {
+    const currentRootId = await this.deps.identityContext?.getCurrentRootId();
+    if (!currentRootId) {
+      return { checked: 0, synced: 0, removed: 0 };
+    }
+
+    await this.deps.connectPeer(nodeInfo);
+
+    const node = this.deps.getNode();
+    const requesterPeerId = typeof node?.peerId?.toString === 'function' ? node.peerId.toString() : undefined;
+    const listResponse = await this.requestDirect(nodeInfo, {
+      type: 'org-pull-list',
+      payload: { requesterRootId: currentRootId, requesterPeerId }
+    });
+
+    const listedOrgIds = listResponse?.type === 'org-pull-list-response' && listResponse.ok
+      ? (listResponse.organizations ?? []).map((item) => item.orgId)
+      : [];
+
+    const localOrgIds = await this.listLocalRelatedOrgIds(currentRootId);
+    const targetOrgIds = Array.from(new Set([...localOrgIds, ...listedOrgIds]));
+
+    let synced = 0;
+    let removed = 0;
+
+    for (const orgId of targetOrgIds) {
+      const response = await this.requestDirect(nodeInfo, {
+        type: 'org-pull-org',
+        payload: {
+          requesterRootId: currentRootId,
+          requesterPeerId,
+          orgId
+        }
+      });
+
+      if (!response || response.type !== 'org-pull-org-response' || !response.ok) {
+        continue;
+      }
+
+      if (response.status === 'removed') {
+        const raw = await this.deps.db.get(`${ORG_META_PREFIX}${orgId}`);
+        if (raw) {
+          await this.deps.db.del(`${ORG_META_PREFIX}${orgId}`);
+          removed += 1;
+          console.log('[p2p][org-pull] removed stale local organization after peer reconciliation', {
+            orgId,
+            reason: response.reason || 'removed',
+            peerId: nodeInfo.peerId,
+            addresses: nodeInfo.addresses
+          });
+        }
+        continue;
+      }
+
+      if (response.status === 'member' && response.organization) {
+        const raw = await this.deps.db.get(`${ORG_META_PREFIX}${orgId}`);
+        const existing = raw ? parseOrganizationRecord(raw) : null;
+        const merged = mergeOrganizationSyncSnapshot(existing, normalizeIncomingSnapshot(response.organization));
+        await this.deps.db.put(`${ORG_META_PREFIX}${orgId}`, JSON.stringify(merged));
+        synced += 1;
+      }
+    }
+
+    return {
+      checked: targetOrgIds.length,
+      synced,
+      removed
+    };
+  }
+}

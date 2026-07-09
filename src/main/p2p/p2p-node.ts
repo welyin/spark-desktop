@@ -69,12 +69,10 @@ export class P2PNode {
     if (!this.node?.services?.pubsub) {
       return [];
     }
-
     const pubsub = this.node.services.pubsub as any;
     if (typeof pubsub.getSubscribers !== 'function') {
       return [];
     }
-
     const subscribers = pubsub.getSubscribers(topic);
     return Array.isArray(subscribers) ? normalizePeerIdList(subscribers) : [];
   }
@@ -84,7 +82,6 @@ export class P2PNode {
     if (!this.node) {
       return [];
     }
-
     try {
       const connections = typeof this.node.getConnections === 'function' ? this.node.getConnections() : [];
       if (!Array.isArray(connections)) {
@@ -102,12 +99,10 @@ export class P2PNode {
     if (!this.node) {
       throw new Error('p2p node not started');
     }
-
     const currentRootId = await this.identityContext?.getCurrentRootId();
     if (!currentRootId) {
       return { attempted: 0, connected: 0 };
     }
-
     const candidates = await this.peerActivity.collectOrganizationPeerCandidates(currentRootId);
     if (candidates.length === 0) {
       return { attempted: 0, connected: 0 };
@@ -126,6 +121,7 @@ export class P2PNode {
           syncOrganizationToMember: (nodeInfo, targetRootId, organization) =>
             this.orgShare.syncOrganizationToMember(nodeInfo, targetRootId, organization)
         });
+        await this.orgShare.pullOrganizationsForCurrentRootFromPeer(candidate);
         connected += 1;
       } catch (error) {
         await this.rememberPeerNodeInfo(candidate, 'failure', error);
@@ -340,6 +336,11 @@ export class P2PNode {
   /** 对外组织同步入口（委托给 orgShare 服务）。 */
   async syncOrganizationToMember(nodeInfo: PeerNodeInfo, targetRootId: string, organization: any): Promise<void> {
     await this.orgShare.syncOrganizationToMember(nodeInfo, targetRootId, organization);
+  }
+
+  /** 对外组织反熵拉取入口（委托给 orgShare 服务）。 */
+  async pullOrganizationsFromPeer(nodeInfo: PeerNodeInfo): Promise<{ checked: number; synced: number; removed: number }> {
+    return await this.orgShare.pullOrganizationsForCurrentRootFromPeer(nodeInfo);
   }
 
   /** 获取用于 UI 诊断展示的节点状态快照。 */

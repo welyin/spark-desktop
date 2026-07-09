@@ -4,6 +4,8 @@ import { DIRECT_ORG_SHARE_PROTOCOL } from './constants';
 import { buildDialTargets, extractPeerId } from './peer-targets';
 import { buildOrganizationSyncSnapshot, isOrganizationSyncStale, mergeOrganizationSyncSnapshot, type OrganizationSyncSnapshot, type OrganizationSyncVersions } from '../organization/sync';
 import { OrgShareSessionState } from './org-share-session';
+import { OrgPullSyncService } from './org-pull-sync';
+import { normalizeIncomingSnapshot } from './org-share-snapshot';
 import { parseJsonSafely, readStreamAsString, resolveProtocolStream, writeStringToStream } from './stream-utils';
 import type { P2PIdentityContext, PeerNodeInfo } from './types';
 
@@ -39,8 +41,17 @@ type OrgSyncState = {
  */
 export class OrgShareSyncService {
   private readonly sessionState = new OrgShareSessionState();
+  private readonly pullSync: OrgPullSyncService;
 
-  constructor(private readonly deps: OrgShareDependencies) {}
+  constructor(private readonly deps: OrgShareDependencies) {
+    this.pullSync = new OrgPullSyncService({
+      db: this.deps.db,
+      identityContext: this.deps.identityContext,
+      runtimeImport: this.deps.runtimeImport,
+      getNode: this.deps.getNode,
+      connectPeer: this.deps.connectPeer
+    });
+  }
 
   private orgSyncStateKey(peerId: string, orgId: string): string {
     return `p2p:org-sync-state:${peerId}:${orgId}`;
@@ -69,6 +80,10 @@ export class OrgShareSyncService {
 
   markAck(syncId: string): void {
     this.sessionState.markAck(syncId);
+  }
+
+  async pullOrganizationsForCurrentRootFromPeer(nodeInfo: PeerNodeInfo): Promise<{ checked: number; synced: number; removed: number }> {
+    return await this.pullSync.reconcileFromPeer(nodeInfo);
   }
 
   async applyIncomingOrgShare(payload: any, source: 'pubsub' | 'direct'): Promise<{
@@ -122,17 +137,10 @@ export class OrgShareSyncService {
     await this.deps.db.open();
     const existingRaw = await this.deps.db.get(`org:meta:${organization.orgId}`);
     const existing = existingRaw ? JSON.parse(existingRaw) : null;
-    const snapshot: OrganizationSyncSnapshot = organization.sync
-      ? organization
-      : buildOrganizationSyncSnapshot({
-          orgId: organization.orgId,
-          name: organization.name,
-          description: organization.description,
-          createdAt: organization.createdAt,
-          createdBy: organization.createdBy,
-          updatedAt: organization.updatedAt,
-          members: members
-        }, organization.transactions ?? []);
+    const snapshot = normalizeIncomingSnapshot({
+      ...organization,
+      members
+    });
     const merged = mergeOrganizationSyncSnapshot(existing, snapshot);
     await this.deps.db.put(`org:meta:${organization.orgId}`, JSON.stringify(merged));
     const persisted = await this.deps.db.get(`org:meta:${organization.orgId}`);
@@ -180,6 +188,12 @@ export class OrgShareSyncService {
         syncId: request.payload?.syncId,
         orgId: request.payload?.organization?.orgId
       });
+
+      if (request.type === 'org-pull-list' || request.type === 'org-pull-org') {
+        const response = await this.pullSync.handleDirectRequest(request as any, incoming);
+        await writeStringToStream(stream, JSON.stringify(response));
+        return;
+      }
 
       if (request.type !== 'org-share') {
         await writeStringToStream(stream, JSON.stringify({ ok: false, reason: 'invalid type' }));

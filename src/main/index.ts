@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, IpcMainInvokeEvent } from 'electron';
 import path from 'path';
 import { levelDB, ensureSystemDomainInitialized, parseDomainFromKey, verifyAccess, getEvidenceHeadHash, verifyEvidenceChain, getEvidenceHeight } from './db';
 import { initP2PNode, getP2PNode, isP2PInitialized } from './p2p/index';
+import { syncCurrentRootOrganizationsToPeer } from './p2p/organization-bootstrap-sync';
 import { registerDomain, unregisterDomain, getDomain, isSystemDomain, isValidPluginDomain } from './domain-registry';
 import { OrganizationService } from './organization/index';
 import { rootIdentityManager } from './identity';
@@ -451,6 +452,40 @@ app.whenReady().then(async () => {
     return {
       ...info,
       error: coreServicesLastError
+    };
+  });
+
+  ipcMain.handle('p2p-sync-peer-organizations', async (event, targetPeer: { peerId?: string; addresses: string[] }) => {
+    requireSystemDomain(event);
+
+    if (!isP2PInitialized() || !getP2PNode().isStarted()) {
+      throw new Error('P2P node is not started. Start P2P before syncing organizations.');
+    }
+
+    const status = await rootIdentityManager.getStatus();
+    if (!status.unlocked || !status.rootId) {
+      throw new Error('Root identity is locked');
+    }
+
+    if (!targetPeer || !Array.isArray(targetPeer.addresses) || targetPeer.addresses.length === 0) {
+      throw new Error('Target peer addresses are required');
+    }
+
+    const pushResult = await syncCurrentRootOrganizationsToPeer({
+      db: levelDB,
+      currentRootId: status.rootId,
+      targetPeer,
+      syncOrganizationToMember: (nodeInfo, targetRootId, organization) =>
+        getP2PNode().syncOrganizationToMember(nodeInfo, targetRootId, organization)
+    });
+
+    const pullResult = await getP2PNode().pullOrganizationsFromPeer(targetPeer);
+
+    return {
+      ...pushResult,
+      pullChecked: pullResult.checked,
+      pullSynced: pullResult.synced,
+      removed: pullResult.removed
     };
   });
 });
