@@ -93,6 +93,8 @@
               <div>
                 <strong>{{ member.rootId }}</strong>
                 <p>加入时间：{{ formatDate(member.joinedAt) }}</p>
+                <p v-if="member.nodeInfo?.peerId">PeerId：{{ member.nodeInfo.peerId }}</p>
+                <p v-if="member.nodeInfo?.addresses?.length">节点地址：{{ member.nodeInfo.addresses.join(' , ') }}</p>
               </div>
               <span class="role-badge" :class="member.role">{{ member.role === 'admin' ? '管理员' : '成员' }}</span>
             </li>
@@ -104,6 +106,14 @@
               <label>
                 添加成员 RootID
                 <input v-model="addMemberRootId" type="text" placeholder="64 位 RootID" />
+              </label>
+              <label>
+                成员 PeerId（可选）
+                <input v-model="addMemberPeerId" type="text" placeholder="例如：12D3KooW..." />
+              </label>
+              <label class="full-width">
+                成员节点地址（必填其一，可多条，逗号/分号/换行分隔）
+                <textarea v-model="addMemberAddresses" rows="3" placeholder="例如：/ip4/127.0.0.1/tcp/15002/ws"></textarea>
               </label>
               <button class="primary" :disabled="busyAction === 'add'" @click="addMember">
                 {{ busyAction === 'add' ? '添加中...' : '添加成员' }}
@@ -143,6 +153,10 @@ type OrganizationMember = {
   role: 'admin' | 'member';
   joinedAt: number;
   addedBy: string;
+  nodeInfo?: {
+    peerId?: string;
+    addresses: string[];
+  };
 };
 
 type OrganizationView = {
@@ -174,6 +188,8 @@ export default defineComponent({
     const busyAction = ref<'add' | 'remove' | 'delete' | ''>('');
     const message = ref('');
     const addMemberRootId = ref('');
+    const addMemberPeerId = ref('');
+    const addMemberAddresses = ref('');
     const removeMemberRootId = ref('');
     const createForm = ref<CreateForm>({ name: '', description: '' });
 
@@ -228,12 +244,36 @@ export default defineComponent({
       if (!selectedOrganization.value) {
         return;
       }
+
+      const addresses = addMemberAddresses.value
+        .split(/\r?\n|,|;/)
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
+
+      if (!addMemberRootId.value.trim()) {
+        message.value = '请输入成员 RootID';
+        return;
+      }
+
+      if (!addMemberPeerId.value.trim() && addresses.length === 0) {
+        message.value = '请输入成员节点信息：PeerId 或至少一个多地址';
+        return;
+      }
+
       busyAction.value = 'add';
       message.value = '';
       try {
-        const updated = await window.electronAPI.organization.addMember(selectedOrganization.value.orgId, addMemberRootId.value);
+        const updated = await window.electronAPI.organization.addMember(selectedOrganization.value.orgId, {
+          rootId: addMemberRootId.value,
+          nodeInfo: {
+            peerId: addMemberPeerId.value.trim() || undefined,
+            addresses
+          }
+        });
         message.value = '成员添加成功';
         addMemberRootId.value = '';
+        addMemberPeerId.value = '';
+        addMemberAddresses.value = '';
         organizations.value = organizations.value.map((organization) =>
           organization.orgId === updated.orgId ? updated : organization
         );
@@ -309,6 +349,8 @@ export default defineComponent({
       message,
       adminOrgCount,
       addMemberRootId,
+      addMemberPeerId,
+      addMemberAddresses,
       removeMemberRootId,
       createForm,
       refreshOrganizations,

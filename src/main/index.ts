@@ -67,7 +67,58 @@ const organizationService = new OrganizationService(levelDB, {
     const status = await rootIdentityManager.getStatus();
     return status.unlocked ? status.rootId : null;
   }
+}, {
+  syncOrganizationToMember: async ({ organization, member, targetRootId }) => {
+    if (!isP2PInitialized()) {
+      throw new Error('P2P node is not initialized. Open database first.');
+    }
+
+    if (!getP2PNode().isStarted()) {
+      throw new Error('P2P node is not started. Start P2P before adding organization members.');
+    }
+
+    if (!member.nodeInfo) {
+      throw new Error('Member node info is required for p2p sync');
+    }
+
+    await getP2PNode().syncOrganizationToMember(member.nodeInfo, targetRootId, organization);
+  }
 });
+
+let coreServicesLastError: string | null = null;
+
+async function ensureCoreServicesStarted(): Promise<void> {
+  try {
+    await levelDB.open();
+
+    try {
+      await ensureSystemDomainInitialized(levelDB);
+      console.log('[main] system domain initialized');
+    } catch (err) {
+      console.error('[main] failed to initialize system domain', err);
+    }
+
+    if (!isP2PInitialized()) {
+      initP2PNode(levelDB, {
+        getCurrentRootId: async () => {
+          const status = await rootIdentityManager.getStatus();
+          return status.unlocked ? status.rootId : null;
+        }
+      });
+      console.log('[main] p2p node initialized with db');
+    }
+
+    if (!getP2PNode().isStarted()) {
+      await getP2PNode().start();
+      console.log('[main] p2p node started automatically');
+    }
+
+    coreServicesLastError = null;
+  } catch (error) {
+    coreServicesLastError = error instanceof Error ? error.message : String(error);
+    throw error;
+  }
+}
 
 async function tryLoadDevUrl(win: BrowserWindow, url: string): Promise<boolean> {
   for (let attempt = 1; attempt <= 20; attempt += 1) {
@@ -159,7 +210,13 @@ function createWindow() {
   win.webContents.openDevTools({ mode: 'right' });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  try {
+    await ensureCoreServicesStarted();
+  } catch (error) {
+    console.error('[main] failed to start core services automatically', error);
+  }
+
   createWindow();
 
   // 查询当前窗口的可信域（只读，供 preload 展示用）
@@ -229,9 +286,9 @@ app.whenReady().then(() => {
     return await organizationService.deleteOrganization(orgId);
   });
 
-  ipcMain.handle('org-add-member', async (event, orgId: string, memberRootId: string) => {
+  ipcMain.handle('org-add-member', async (event, orgId: string, input: { rootId: string; nodeInfo: { peerId?: string; addresses: string[] } }) => {
     requireSystemDomain(event);
-    return await organizationService.addMember(orgId, memberRootId);
+    return await organizationService.addMember(orgId, input);
   });
 
   ipcMain.handle('org-remove-member', async (event, orgId: string, memberRootId: string) => {
@@ -241,25 +298,16 @@ app.whenReady().then(() => {
 
   ipcMain.handle('db-open', async (event) => {
     requireSystemDomain(event);
-    await levelDB.open();
-    try {
-      await ensureSystemDomainInitialized(levelDB);
-      console.log('[main] system domain initialized');
-    } catch (err) {
-      console.error('[main] failed to initialize system domain', err);
-    }
-
-    // 数据库打开后初始化 P2P 节点（注入 db 依赖）
-    if (!isP2PInitialized()) {
-      initP2PNode(levelDB);
-      console.log('[main] p2p node initialized with db');
-    }
+    await ensureCoreServicesStarted();
 
     return { path: levelDB.path, open: levelDB.isOpen };
   });
 
   ipcMain.handle('db-close', async (event) => {
     requireSystemDomain(event);
+    if (isP2PInitialized() && getP2PNode().isStarted()) {
+      await getP2PNode().stop();
+    }
     await levelDB.close();
     return { open: levelDB.isOpen };
   });
@@ -332,8 +380,8 @@ app.whenReady().then(() => {
   // P2P IPC handlers
   ipcMain.handle('p2p-start', async (event) => {
     requireSystemDomain(event);
-    if (!isP2PInitialized()) {
-      throw new Error('P2P node not initialized. Open database first.');
+    if (!isP2PInitialized() || !levelDB.isOpen) {
+      await ensureCoreServicesStarted();
     }
     try {
       await getP2PNode().start();
@@ -364,6 +412,34 @@ app.whenReady().then(() => {
     }
     await getP2PNode().broadcast(topic, message);
     return { success: true };
+  });
+
+  ipcMain.handle('p2p-info', async (event) => {
+    requireSystemDomain(event);
+
+    if (!isP2PInitialized() || !getP2PNode().isStarted()) {
+      try {
+        await ensureCoreServicesStarted();
+      } catch (error) {
+        console.error('[main] p2p-info lazy start failed', error);
+      }
+    }
+
+    if (!isP2PInitialized()) {
+      return {
+        initialized: false,
+        started: false,
+        peerId: null,
+        addresses: [],
+        error: coreServicesLastError
+      };
+    }
+
+    const info = getP2PNode().getLocalNodeInfo();
+    return {
+      ...info,
+      error: coreServicesLastError
+    };
   });
 });
 

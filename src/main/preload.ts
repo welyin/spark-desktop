@@ -32,6 +32,7 @@ export type ElectronAPI = {
     start: () => Promise<{ started: boolean }>;
     stop: () => Promise<{ started: boolean }>;
     broadcast: (topic: string, message: any) => Promise<{ success: boolean }>;
+    info: () => Promise<{ initialized: boolean; started: boolean; peerId: string | null; addresses: string[]; error?: string | null }>;
   };
   plugin: {
     openView: (pluginDomain: string, pluginView?: string) => Promise<{ success: boolean; windowId: number }>;
@@ -49,6 +50,10 @@ export type ElectronAPI = {
         role: 'admin' | 'member';
         joinedAt: number;
         addedBy: string;
+        nodeInfo?: {
+          peerId?: string;
+          addresses: string[];
+        };
       }>;
       currentUserRole: 'admin' | 'member' | null;
       isCurrentUserAdmin: boolean;
@@ -67,6 +72,10 @@ export type ElectronAPI = {
         role: 'admin' | 'member';
         joinedAt: number;
         addedBy: string;
+        nodeInfo?: {
+          peerId?: string;
+          addresses: string[];
+        };
       }>;
       currentUserRole: 'admin' | 'member' | null;
       isCurrentUserAdmin: boolean;
@@ -74,7 +83,7 @@ export type ElectronAPI = {
       adminCount: number;
     }>;
     delete: (orgId: string) => Promise<{ success: boolean }>;
-    addMember: (orgId: string, memberRootId: string) => Promise<{
+    addMember: (orgId: string, input: { rootId: string; nodeInfo: { peerId?: string; addresses: string[] } }) => Promise<{
       orgId: string;
       name: string;
       description: string;
@@ -86,6 +95,10 @@ export type ElectronAPI = {
         role: 'admin' | 'member';
         joinedAt: number;
         addedBy: string;
+        nodeInfo?: {
+          peerId?: string;
+          addresses: string[];
+        };
       }>;
       currentUserRole: 'admin' | 'member' | null;
       isCurrentUserAdmin: boolean;
@@ -104,6 +117,10 @@ export type ElectronAPI = {
         role: 'admin' | 'member';
         joinedAt: number;
         addedBy: string;
+        nodeInfo?: {
+          peerId?: string;
+          addresses: string[];
+        };
       }>;
       currentUserRole: 'admin' | 'member' | null;
       isCurrentUserAdmin: boolean;
@@ -145,7 +162,8 @@ const api = {
   p2p: {
     start: () => ipcRenderer.invoke('p2p-start'),
     stop: () => ipcRenderer.invoke('p2p-stop'),
-    broadcast: (topic: string, message: any) => ipcRenderer.invoke('p2p-broadcast', topic, message)
+    broadcast: (topic: string, message: any) => ipcRenderer.invoke('p2p-broadcast', topic, message),
+    info: () => ipcRenderer.invoke('p2p-info')
   },
   plugin: {
     openView: (pluginDomain: string, pluginView = 'default') =>
@@ -155,7 +173,7 @@ const api = {
     listMine: () => ipcRenderer.invoke('org-list-mine'),
     create: (input: { name: string; description?: string }) => ipcRenderer.invoke('org-create', input),
     delete: (orgId: string) => ipcRenderer.invoke('org-delete', orgId),
-    addMember: (orgId: string, memberRootId: string) => ipcRenderer.invoke('org-add-member', orgId, memberRootId),
+    addMember: (orgId: string, input: { rootId: string; nodeInfo: { peerId?: string; addresses: string[] } }) => ipcRenderer.invoke('org-add-member', orgId, input),
     removeMember: (orgId: string, memberRootId: string) => ipcRenderer.invoke('org-remove-member', orgId, memberRootId)
   },
   rootIdentity: {

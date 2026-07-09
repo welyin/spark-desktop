@@ -50,17 +50,38 @@ describe('OrganizationService', () => {
 	it('restricts member management and deletion to admins', async () => {
 		const db = new MemoryDb();
 		let currentRootId = 'b'.repeat(64);
+		const syncCalls: Array<{ targetRootId: string }> = [];
 		const service = new OrganizationService(db, {
 			getCurrentRootId: async () => currentRootId
+		}, {
+			syncOrganizationToMember: async ({ targetRootId }) => {
+				syncCalls.push({ targetRootId });
+			}
 		});
 
 		const created = await service.createOrganization({ name: 'Team One' });
 		const memberRootId = 'c'.repeat(64);
-		await service.addMember(created.orgId, memberRootId);
+		await service.addMember(created.orgId, {
+			rootId: memberRootId,
+			nodeInfo: {
+				peerId: 'QmMemberPeerIdDemo',
+				addresses: ['/ip4/127.0.0.1/tcp/15002/ws']
+			}
+		});
+		expect(syncCalls).toHaveLength(1);
+		expect(syncCalls[0]?.targetRootId).toBe(memberRootId);
 
 		currentRootId = memberRootId;
 		await expect(service.deleteOrganization(created.orgId)).rejects.toThrow(/admin/i);
-		await expect(service.addMember(created.orgId, 'd'.repeat(64))).rejects.toThrow(/admin/i);
+		await expect(
+			service.addMember(created.orgId, {
+				rootId: 'd'.repeat(64),
+				nodeInfo: {
+					peerId: 'QmAnotherPeerDemo',
+					addresses: ['/ip4/127.0.0.1/tcp/15003/ws']
+				}
+			})
+		).rejects.toThrow(/admin/i);
 		await expect(service.removeMember(created.orgId, 'b'.repeat(64))).rejects.toThrow(/admin/i);
 
 		currentRootId = 'b'.repeat(64);
@@ -78,5 +99,34 @@ describe('OrganizationService', () => {
 
 		const created = await service.createOrganization({ name: 'Guarded Org' });
 		await expect(service.removeMember(created.orgId, rootId)).rejects.toThrow(/at least one admin/i);
+	});
+
+	it('requires member node info and sync callback when adding a member', async () => {
+		const db = new MemoryDb();
+		const rootId = 'f'.repeat(64);
+		const serviceWithoutSync = new OrganizationService(db, {
+			getCurrentRootId: async () => rootId
+		});
+
+		const created = await serviceWithoutSync.createOrganization({ name: 'Sync Required Org' });
+		await expect(
+			serviceWithoutSync.addMember(created.orgId, {
+				rootId: '1'.repeat(64),
+				nodeInfo: { peerId: 'QmPeerNoSyncDemo', addresses: ['/ip4/127.0.0.1/tcp/15004/ws'] }
+			})
+		).rejects.toThrow(/not configured/i);
+
+		const serviceWithSync = new OrganizationService(db, {
+			getCurrentRootId: async () => rootId
+		}, {
+			syncOrganizationToMember: async () => {}
+		});
+
+		await expect(
+			serviceWithSync.addMember(created.orgId, {
+				rootId: '2'.repeat(64),
+				nodeInfo: { peerId: '', addresses: [] }
+			})
+		).rejects.toThrow(/node info/i);
 	});
 });

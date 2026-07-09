@@ -12,7 +12,6 @@
  */
 import crypto from 'crypto';
 import { LevelDB } from '../db/base';
-import { verifyAccess } from '../db/domain';
 import { getEvidenceHeadHash } from '../db/evidence';
 
 declare const require: any;
@@ -31,15 +30,37 @@ export type P2PMessageBody = {
   signature?: string; // 签名（base64）
 };
 
+export type PeerNodeInfo = {
+  peerId?: string;
+  addresses: string[];
+};
+
+export type LocalP2PNodeInfo = {
+  initialized: boolean;
+  started: boolean;
+  peerId: string | null;
+  addresses: string[];
+};
+
+type P2PIdentityContext = {
+  getCurrentRootId: () => Promise<string | null>;
+};
+
+const runtimeImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
+
 let p2pNodeInstance: P2PNode | null = null;
 
 export class P2PNode {
   private node: any | null = null;
+  private startPromise: Promise<void> | null = null;
   private privateKey: crypto.KeyObject;
   public publicKeyPem: string;
   public nodeId: string = 'local-node';
 
-  constructor(private readonly db: LevelDB) {
+  constructor(
+    private readonly db: LevelDB,
+    private readonly identityContext?: P2PIdentityContext
+  ) {
     // 使用 ed25519 生成密钥对用于消息签名
     const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
     this.privateKey = privateKey;
@@ -49,45 +70,77 @@ export class P2PNode {
   /** 初始化并启动 libp2p 节点（动态 require，避免编译时强依赖） */
   async start() {
     if (this.node) return;
+    if (this.startPromise) {
+      await this.startPromise;
+      return;
+    }
 
-    // 延迟加载 libp2p 相关模块，运行时需将依赖安装到项目
-    const Libp2p = require('libp2p');
-    const Gossip = require('libp2p-gossipsub');
-    const Websockets = require('libp2p-websockets');
-    const Mplex = require('libp2p-mplex');
-    const Noise = require('libp2p-noise');
-    const MDNS = require('libp2p-mdns');
-
-    this.node = await Libp2p.create({
-      addresses: { listen: ['/ip4/0.0.0.0/tcp/0/ws'] },
-      modules: {
-        transport: [Websockets],
-        streamMuxer: [Mplex],
-        connEncryption: [Noise],
-        pubsub: Gossip,
-        peerDiscovery: [MDNS]
-      },
-      config: {
-        pubsub: {
-          enabled: true,
-          emitSelf: false
-        }
+    this.startPromise = (async () => {
+      // Electron/Node18 环境缺少部分现代运行时能力，补齐后可兼容 libp2p 新栈。
+      if (typeof (Promise as any).withResolvers !== 'function') {
+        (Promise as any).withResolvers = () => {
+          let resolve: (value: unknown) => void;
+          let reject: (reason?: unknown) => void;
+          const promise = new Promise((res, rej) => {
+            resolve = res;
+            reject = rej;
+          });
+          return { promise, resolve: resolve!, reject: reject! };
+        };
       }
-    });
 
-    // 启动节点
-    await this.node.start();
-    this.nodeId = this.node.peerId.toB58String();
+      if (typeof (globalThis as any).CustomEvent === 'undefined') {
+        (globalThis as any).CustomEvent = class CustomEvent extends Event {
+          detail: unknown;
 
-    // 订阅统一的同步 topic
-    const syncTopic = 'spark-sync';
-    await this.node.pubsub.subscribe(syncTopic);
+          constructor(type: string, params: { detail?: unknown } = {}) {
+            super(type);
+            this.detail = params.detail;
+          }
+        };
+      }
 
-    // 处理入站消息
-    this.node.pubsub.on('message', async (msg: any) => {
+      // 延迟加载 libp2p 新栈（ESM），避免主进程启动阶段强耦合。
+      const { createLibp2p } = await runtimeImport('libp2p');
+      const { webSockets } = await runtimeImport('@libp2p/websockets');
+      const { mplex } = await runtimeImport('@libp2p/mplex');
+      const { noise } = await runtimeImport('@chainsafe/libp2p-noise');
+      const { mdns } = await runtimeImport('@libp2p/mdns');
+      const { gossipsub } = await runtimeImport('@chainsafe/libp2p-gossipsub');
+      const { identify } = await runtimeImport('@libp2p/identify');
+
+      this.node = await createLibp2p({
+        addresses: { listen: ['/ip4/0.0.0.0/tcp/0/ws'] },
+        transports: [webSockets()],
+        streamMuxers: [mplex()],
+        connectionEncrypters: [noise()],
+        peerDiscovery: [mdns()],
+        services: {
+          identify: identify(),
+          // @chainsafe/libp2p-gossipsub and libp2p may resolve duplicate interface types in TS;
+          // runtime is validated by startup smoke tests.
+          pubsub: gossipsub({
+            emitSelf: false,
+            allowPublishToZeroTopicPeers: true
+          }) as any
+        }
+      });
+
+      // 启动节点
+      await this.node.start();
+      this.nodeId = typeof this.node.peerId?.toString === 'function' ? this.node.peerId.toString() : String(this.node.peerId);
+
+      // 订阅统一的同步 topic
+      const syncTopic = 'spark-sync';
+      await this.node.services.pubsub.subscribe(syncTopic);
+
+      const handleMessage = async (raw: any) => {
+      const msg = raw?.detail ?? raw;
+      const dataBytes = msg?.data;
+      const data = dataBytes ? Buffer.from(dataBytes).toString('utf8') : null;
+      if (!data) return;
+
       try {
-        const data = msg.data ? msg.data.toString() : null;
-        if (!data) return;
         const parsed: P2PMessageBody = JSON.parse(data);
         // 校验签名
         if (parsed.pubKey && parsed.signature) {
@@ -134,16 +187,60 @@ export class P2PNode {
           await applyRemoteUpdate(this.db, col, domain, collection, id, payload, meta);
         }
 
+        if (parsed.type === 'org-share') {
+          const targetRootId = parsed.payload?.targetRootId;
+          const organization = parsed.payload?.organization;
+          if (!targetRootId || !organization?.orgId) {
+            return;
+          }
+
+          if (!this.identityContext) {
+            return;
+          }
+
+          const currentRootId = await this.identityContext.getCurrentRootId();
+          if (!currentRootId || currentRootId !== targetRootId) {
+            return;
+          }
+
+          const members = Array.isArray(organization.members) ? organization.members : [];
+          const containsCurrent = members.some((member: any) => member?.rootId === currentRootId);
+          if (!containsCurrent) {
+            return;
+          }
+
+          await this.db.open();
+          await this.db.put(`org:meta:${organization.orgId}`, JSON.stringify(organization));
+          console.log('[p2p] organization synced from peer', organization.orgId);
+        }
+
         console.log('[p2p] received', parsed.type, 'domain=', parsed.domain);
       } catch (err) {
         console.error('[p2p] failed to handle message', err);
       }
-    });
+    };
 
-    console.log('[p2p] node started, peerId=', this.nodeId);
+      // 处理入站消息（兼容 EventTarget 与 EventEmitter 两种接口）
+      if (typeof this.node.services.pubsub.addEventListener === 'function') {
+        this.node.services.pubsub.addEventListener('message', handleMessage);
+      } else if (typeof this.node.services.pubsub.on === 'function') {
+        this.node.services.pubsub.on('message', handleMessage);
+      }
+
+      console.log('[p2p] node started, peerId=', this.nodeId);
+    })();
+
+    try {
+      await this.startPromise;
+    } finally {
+      this.startPromise = null;
+    }
   }
 
   async stop() {
+    if (this.startPromise) {
+      await this.startPromise;
+    }
     if (!this.node) return;
     await this.node.stop();
     this.node = null;
@@ -168,7 +265,75 @@ export class P2PNode {
     envelope.signature = this.signEnvelope(envelope);
 
     const payload = Buffer.from(JSON.stringify(envelope));
-    await this.node.pubsub.publish(topic, payload);
+    await this.node.services.pubsub.publish(topic, payload);
+  }
+
+  async connectPeer(nodeInfo: PeerNodeInfo): Promise<void> {
+    if (!this.node) throw new Error('p2p node not started');
+
+    const addresses = nodeInfo.addresses.map((item) => item.trim()).filter((item) => item.length > 0);
+    if (addresses.length === 0) {
+      throw new Error('Member node addresses are required for p2p connect');
+    }
+
+    let lastError: unknown = null;
+    for (const address of addresses) {
+      try {
+        await this.node.dial(address);
+        console.log('[p2p] connected to peer via', address);
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    throw new Error(`Failed to connect peer by provided addresses: ${String(lastError)}`);
+  }
+
+  async syncOrganizationToMember(nodeInfo: PeerNodeInfo, targetRootId: string, organization: any): Promise<void> {
+    if (!this.node) throw new Error('p2p node not started');
+    await this.connectPeer(nodeInfo);
+
+    await this.broadcast('spark-sync', {
+      type: 'org-share',
+      domain: 'system',
+      payload: {
+        targetRootId,
+        organization,
+        nodeInfo: {
+          peerId: nodeInfo.peerId,
+          addresses: nodeInfo.addresses
+        }
+      }
+    });
+  }
+
+  getLocalNodeInfo(): LocalP2PNodeInfo {
+    if (!this.node) {
+      return {
+        initialized: true,
+        started: false,
+        peerId: null,
+        addresses: []
+      };
+    }
+
+    const rawMultiaddrs = typeof this.node.getMultiaddrs === 'function' ? this.node.getMultiaddrs() : [];
+    const addresses = Array.isArray(rawMultiaddrs)
+      ? rawMultiaddrs.map((addr: any) => {
+          if (!addr) return '';
+          if (typeof addr === 'string') return addr;
+          if (typeof addr.toString === 'function') return addr.toString();
+          return '';
+        }).filter((value: string) => value.length > 0)
+      : [];
+
+    return {
+      initialized: true,
+      started: true,
+      peerId: this.nodeId,
+      addresses
+    };
   }
 
   /** 使用本地私钥签名信封（签名前去除 signature 字段） */
@@ -198,11 +363,11 @@ export class P2PNode {
  * 初始化 P2P 节点单例，注入数据库依赖
  * 必须在使用 getP2PNode() 之前调用
  */
-export function initP2PNode(db: LevelDB): P2PNode {
+export function initP2PNode(db: LevelDB, identityContext?: P2PIdentityContext): P2PNode {
   if (p2pNodeInstance) {
     throw new Error('P2P node already initialized. Call initP2PNode only once.');
   }
-  p2pNodeInstance = new P2PNode(db);
+  p2pNodeInstance = new P2PNode(db, identityContext);
   return p2pNodeInstance;
 }
 

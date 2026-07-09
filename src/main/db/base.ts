@@ -25,6 +25,8 @@ export type DocumentValue = Record<string, unknown>;
 export class LevelDB {
   private db?: Level<string, string>;
   private currentPath: string;
+  private openPromise: Promise<void> | null = null;
+  private opened = false;
 
   /**
    * 构造函数，传入数据库目录名（默认 'spark-leveldb'）
@@ -40,12 +42,12 @@ export class LevelDB {
 
   /** 是否已经打开 */
   get isOpen() {
-    return !!this.db;
+    return this.opened;
   }
 
   /** 确保数据库已打开，否则抛出错误 */
   private ensureOpen() {
-    if (!this.db) {
+    if (!this.db || !this.opened) {
       throw new Error('LevelDB is not open');
     }
     return this.db;
@@ -55,27 +57,45 @@ export class LevelDB {
    * 打开数据库（若已打开则不重复打开）
    */
   async open(): Promise<void> {
-    if (this.db) {
+    if (this.opened) {
       return;
     }
 
-    // 创建并打开数据库实例
-    this.db = new Level<string, string>(this.currentPath, {
-      valueEncoding: 'utf8'
-    });
-
-    try {
-      await this.db.open();
-    } catch (error) {
-      this.cleanup();
-      throw new Error(`Failed to open LevelDB at ${this.currentPath}: ${error instanceof Error ? error.message : String(error)}`);
+    if (this.openPromise) {
+      await this.openPromise;
+      return;
     }
+
+    if (!this.db) {
+      // 创建并打开数据库实例
+      this.db = new Level<string, string>(this.currentPath, {
+        valueEncoding: 'utf8'
+      });
+    }
+
+    this.openPromise = (async () => {
+      try {
+        await this.db!.open();
+        this.opened = true;
+      } catch (error) {
+        this.cleanup();
+        throw new Error(`Failed to open LevelDB at ${this.currentPath}: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        this.openPromise = null;
+      }
+    })();
+
+    await this.openPromise;
   }
 
   /**
    * 关闭数据库并清理内部引用
    */
   async close(): Promise<void> {
+    if (this.openPromise) {
+      await this.openPromise;
+    }
+
     if (!this.db) {
       return;
     }
@@ -184,6 +204,8 @@ export class LevelDB {
   /** 清理内部 db 引用 */
   private cleanup() {
     this.db = undefined;
+    this.openPromise = null;
+    this.opened = false;
   }
 }
 

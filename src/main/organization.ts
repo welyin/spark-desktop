@@ -2,11 +2,17 @@ import { randomBytes } from 'crypto';
 
 export type OrganizationRole = 'admin' | 'member';
 
+export type OrganizationNodeInfo = {
+	peerId?: string;
+	addresses: string[];
+};
+
 export type OrganizationMember = {
 	rootId: string;
 	role: OrganizationRole;
 	joinedAt: number;
 	addedBy: string;
+	nodeInfo?: OrganizationNodeInfo;
 };
 
 export type OrganizationRecord = {
@@ -36,6 +42,14 @@ type OrganizationDb = {
 
 type RootIdentityContext = {
 	getCurrentRootId: () => Promise<string | null>;
+};
+
+type OrganizationSyncContext = {
+	syncOrganizationToMember?: (payload: {
+		organization: OrganizationRecord;
+		member: OrganizationMember;
+		targetRootId: string;
+	}) => Promise<void>;
 };
 
 type CreateOrganizationInput = {
@@ -69,6 +83,26 @@ function parseRecord(raw: string): OrganizationRecord {
 	return JSON.parse(raw) as OrganizationRecord;
 }
 
+function normalizeNodeInfo(nodeInfo: OrganizationNodeInfo): OrganizationNodeInfo {
+	const peerId = nodeInfo.peerId?.trim();
+	const addresses = nodeInfo.addresses
+		.map((item) => item.trim())
+		.filter((item) => item.length > 0);
+
+	if (!peerId && addresses.length === 0) {
+		throw new Error('Member node info is required: provide peerId or at least one address');
+	}
+
+	if (peerId && peerId.length < 8) {
+		throw new Error('Invalid peerId');
+	}
+
+	return {
+		peerId: peerId || undefined,
+		addresses
+	};
+}
+
 function sortMembers(members: OrganizationMember[]): OrganizationMember[] {
 	return [...members].sort((left, right) => {
 		if (left.role !== right.role) {
@@ -85,7 +119,8 @@ function generateOrganizationId(): string {
 export class OrganizationService {
 	constructor(
 		private readonly db: OrganizationDb,
-		private readonly rootIdentity: RootIdentityContext
+		private readonly rootIdentity: RootIdentityContext,
+		private readonly syncContext: OrganizationSyncContext = {}
 	) {}
 
 	async listMine(): Promise<OrganizationView[]> {
@@ -135,28 +170,49 @@ export class OrganizationService {
 		return { success: true };
 	}
 
-	async addMember(orgId: string, memberRootId: string): Promise<OrganizationView> {
+	async addMember(orgId: string, input: { rootId: string; nodeInfo: OrganizationNodeInfo }): Promise<OrganizationView> {
 		const currentRootId = await this.requireCurrentRootId();
 		const record = await this.requireOrganization(orgId);
 		this.requireAdmin(record, currentRootId);
 
-		const normalizedMemberRootId = normalizeRootId(memberRootId);
+		const normalizedMemberRootId = normalizeRootId(input.rootId);
+		const normalizedNodeInfo = normalizeNodeInfo(input.nodeInfo);
 		const existingMember = record.members.find((member) => member.rootId === normalizedMemberRootId);
 		if (existingMember) {
+			existingMember.nodeInfo = normalizedNodeInfo;
+			record.updatedAt = Date.now();
+			await this.db.open();
+			await this.db.put(organizationKey(orgId), JSON.stringify(record));
 			return this.toView(record, currentRootId);
 		}
 
-		record.members.push({
+		const newMember: OrganizationMember = {
 			rootId: normalizedMemberRootId,
 			role: 'member',
 			joinedAt: Date.now(),
-			addedBy: currentRootId
+			addedBy: currentRootId,
+			nodeInfo: normalizedNodeInfo
+		};
+
+		const updatedRecord: OrganizationRecord = {
+			...record,
+			updatedAt: Date.now(),
+			members: [...record.members, newMember]
+		};
+
+		if (!this.syncContext.syncOrganizationToMember) {
+			throw new Error('P2P organization sync is not configured');
+		}
+
+		await this.syncContext.syncOrganizationToMember({
+			organization: updatedRecord,
+			member: newMember,
+			targetRootId: normalizedMemberRootId
 		});
-		record.updatedAt = Date.now();
 
 		await this.db.open();
-		await this.db.put(organizationKey(orgId), JSON.stringify(record));
-		return this.toView(record, currentRootId);
+		await this.db.put(organizationKey(orgId), JSON.stringify(updatedRecord));
+		return this.toView(updatedRecord, currentRootId);
 	}
 
 	async removeMember(orgId: string, memberRootId: string): Promise<OrganizationView> {

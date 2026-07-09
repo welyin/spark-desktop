@@ -19,7 +19,8 @@ const api = {
   p2p: {
     start: () => ipcRenderer.invoke('p2p-start'),
     stop: () => ipcRenderer.invoke('p2p-stop'),
-    broadcast: (topic, message) => ipcRenderer.invoke('p2p-broadcast', topic, message)
+    broadcast: (topic, message) => ipcRenderer.invoke('p2p-broadcast', topic, message),
+    info: () => ipcRenderer.invoke('p2p-info')
   },
   plugin: {
     openView: (pluginDomain, pluginView = 'default') =>
@@ -29,7 +30,7 @@ const api = {
     listMine: () => ipcRenderer.invoke('org-list-mine'),
     create: (input) => ipcRenderer.invoke('org-create', input),
     delete: (orgId) => ipcRenderer.invoke('org-delete', orgId),
-    addMember: (orgId, memberRootId) => ipcRenderer.invoke('org-add-member', orgId, memberRootId),
+    addMember: (orgId, input) => ipcRenderer.invoke('org-add-member', orgId, input),
     removeMember: (orgId, memberRootId) => ipcRenderer.invoke('org-remove-member', orgId, memberRootId)
   },
   rootIdentity: {
