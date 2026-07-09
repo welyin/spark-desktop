@@ -57,6 +57,10 @@ export class P2PNode {
   public publicKeyPem: string;
   public nodeId: string = 'local-node';
 
+  private async delay(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   constructor(
     private readonly db: LevelDB,
     private readonly identityContext?: P2PIdentityContext
@@ -200,27 +204,48 @@ export class P2PNode {
           const targetRootId = parsed.payload?.targetRootId;
           const organization = parsed.payload?.organization;
           if (!targetRootId || !organization?.orgId) {
+            console.warn('[p2p][org-share] invalid payload, skip');
             return;
           }
 
+          console.log('[p2p][org-share] received candidate', {
+            orgId: organization.orgId,
+            targetRootId,
+            members: Array.isArray(organization.members) ? organization.members.length : 0
+          });
+
           if (!this.identityContext) {
+            console.warn('[p2p][org-share] missing identity context, skip');
             return;
           }
 
           const currentRootId = await this.identityContext.getCurrentRootId();
           if (!currentRootId || currentRootId !== targetRootId) {
+            console.log('[p2p][org-share] target mismatch, skip', {
+              currentRootId,
+              targetRootId
+            });
             return;
           }
 
           const members = Array.isArray(organization.members) ? organization.members : [];
           const containsCurrent = members.some((member: any) => member?.rootId === currentRootId);
           if (!containsCurrent) {
+            console.warn('[p2p][org-share] current root not found in members, skip', {
+              currentRootId,
+              orgId: organization.orgId
+            });
             return;
           }
 
           await this.db.open();
           await this.db.put(`org:meta:${organization.orgId}`, JSON.stringify(organization));
-          console.log('[p2p] organization synced from peer', organization.orgId);
+          const persisted = await this.db.get(`org:meta:${organization.orgId}`);
+          console.log('[p2p][org-share] organization synced from peer', {
+            orgId: organization.orgId,
+            persisted: !!persisted,
+            memberCount: members.length
+          });
         }
 
         console.log('[p2p] received', parsed.type, 'domain=', parsed.domain);
@@ -311,9 +336,16 @@ export class P2PNode {
 
   async syncOrganizationToMember(nodeInfo: PeerNodeInfo, targetRootId: string, organization: any): Promise<void> {
     if (!this.node) throw new Error('p2p node not started');
+    console.log('[p2p][org-share] start sync to member', {
+      orgId: organization?.orgId,
+      targetRootId,
+      peerId: nodeInfo.peerId,
+      addresses: nodeInfo.addresses
+    });
+
     await this.connectPeer(nodeInfo);
 
-    await this.broadcast('spark-sync', {
+    const payload = {
       type: 'org-share',
       domain: 'system',
       payload: {
@@ -324,7 +356,24 @@ export class P2PNode {
           addresses: nodeInfo.addresses
         }
       }
-    });
+    } as const;
+
+    // gossipsub 在刚建立连接后可能存在短暂传播窗口，增加小次数重试提升送达率。
+    const retryIntervalsMs = [0, 250, 750];
+    for (let i = 0; i < retryIntervalsMs.length; i += 1) {
+      const waitMs = retryIntervalsMs[i];
+      if (waitMs > 0) {
+        await this.delay(waitMs);
+      }
+      await this.broadcast('spark-sync', payload);
+      console.log('[p2p][org-share] published', {
+        orgId: organization?.orgId,
+        targetRootId,
+        attempt: i + 1,
+        total: retryIntervalsMs.length,
+        waitMs
+      });
+    }
   }
 
   getLocalNodeInfo(): LocalP2PNodeInfo {

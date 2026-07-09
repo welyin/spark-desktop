@@ -201,6 +201,11 @@ export class OrganizationService {
 				member: updatedMember,
 				targetRootId: normalizedMemberRootId
 			});
+			console.log('[org] member sync published', {
+				orgId,
+				targetRootId: normalizedMemberRootId,
+				reason: 'member-exists-update-node-info'
+			});
 
 			await this.db.open();
 			await this.db.put(organizationKey(orgId), JSON.stringify(updatedRecord));
@@ -229,6 +234,11 @@ export class OrganizationService {
 			organization: updatedRecord,
 			member: newMember,
 			targetRootId: normalizedMemberRootId
+		});
+		console.log('[org] member sync published', {
+			orgId,
+			targetRootId: normalizedMemberRootId,
+			reason: 'new-member-added'
 		});
 
 		await this.db.open();
