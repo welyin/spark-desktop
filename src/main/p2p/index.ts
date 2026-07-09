@@ -40,6 +40,8 @@ export type LocalP2PNodeInfo = {
   started: boolean;
   peerId: string | null;
   addresses: string[];
+  connectedPeers: string[];
+  sparkSyncSubscribers: string[];
 };
 
 type P2PIdentityContext = {
@@ -210,6 +212,17 @@ export class P2PNode {
       await this.node.start();
       this.nodeId = typeof this.node.peerId?.toString === 'function' ? this.node.peerId.toString() : String(this.node.peerId);
 
+      if (typeof this.node.addEventListener === 'function') {
+        this.node.addEventListener('peer:connect', (event: any) => {
+          const peerId = event?.detail?.toString?.() ?? event?.detail?.remotePeer?.toString?.() ?? 'unknown';
+          console.log('[p2p] peer connected', peerId);
+        });
+        this.node.addEventListener('peer:disconnect', (event: any) => {
+          const peerId = event?.detail?.toString?.() ?? event?.detail?.remotePeer?.toString?.() ?? 'unknown';
+          console.log('[p2p] peer disconnected', peerId);
+        });
+      }
+
       // 订阅统一的同步 topic
       const syncTopic = 'spark-sync';
       await this.node.services.pubsub.subscribe(syncTopic);
@@ -339,6 +352,18 @@ export class P2PNode {
     }
   }
 
+  private getConnectedPeers(): string[] {
+    if (!this.node) {
+      return [];
+    }
+
+    try {
+      const peers = typeof this.node.getPeers === 'function' ? this.node.getPeers() : [];
+      return Array.isArray(peers) ? this.normalizePeerIdList(peers) : [];
+    } catch {
+      return [];
+    }
+  }
   async stop() {
     if (this.startPromise) {
       await this.startPromise;
@@ -458,7 +483,9 @@ export class P2PNode {
         initialized: true,
         started: false,
         peerId: null,
-        addresses: []
+        addresses: [],
+        connectedPeers: [],
+        sparkSyncSubscribers: []
       };
     }
 
@@ -476,7 +503,9 @@ export class P2PNode {
       initialized: true,
       started: true,
       peerId: this.nodeId,
-      addresses
+      addresses,
+      connectedPeers: this.getConnectedPeers(),
+      sparkSyncSubscribers: this.getTopicSubscribers('spark-sync')
     };
   }
 

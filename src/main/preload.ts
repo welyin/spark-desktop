@@ -32,7 +32,15 @@ export type ElectronAPI = {
     start: () => Promise<{ started: boolean }>;
     stop: () => Promise<{ started: boolean }>;
     broadcast: (topic: string, message: any) => Promise<{ success: boolean }>;
-    info: () => Promise<{ initialized: boolean; started: boolean; peerId: string | null; addresses: string[]; error?: string | null }>;
+    info: () => Promise<{
+      initialized: boolean;
+      started: boolean;
+      peerId: string | null;
+      addresses: string[];
+      connectedPeers: string[];
+      sparkSyncSubscribers: string[];
+      error?: string | null;
+    }>;
   };
   plugin: {
     openView: (pluginDomain: string, pluginView?: string) => Promise<{ success: boolean; windowId: number }>;

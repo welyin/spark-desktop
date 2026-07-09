@@ -17,6 +17,20 @@
           <div class="status-item"><strong>P2P 初始化：</strong>{{ p2pInfo.initialized ? '是' : '否' }}</div>
           <div class="status-item"><strong>P2P 运行中：</strong>{{ p2pInfo.started ? '是' : '否' }}</div>
           <div class="status-item"><strong>PeerId：</strong>{{ p2pInfo.peerId || '未获取' }}</div>
+          <div class="status-item">
+            <strong>已连接 Peer：</strong>
+            <template v-if="p2pInfo.connectedPeers.length > 0">
+              <div v-for="peer in p2pInfo.connectedPeers" :key="peer" class="mono">{{ peer }}</div>
+            </template>
+            <span v-else>暂无</span>
+          </div>
+          <div class="status-item">
+            <strong>spark-sync 订阅者：</strong>
+            <template v-if="p2pInfo.sparkSyncSubscribers.length > 0">
+              <div v-for="peer in p2pInfo.sparkSyncSubscribers" :key="`sub-${peer}`" class="mono">{{ peer }}</div>
+            </template>
+            <span v-else>暂无</span>
+          </div>
           <div v-if="p2pInfo.error" class="status-item warn-item"><strong>P2P 启动异常：</strong>{{ p2pInfo.error }}</div>
           <div class="status-item">
             <strong>节点地址：</strong>
@@ -65,6 +79,8 @@ type P2PInfo = {
   started: boolean;
   peerId: string | null;
   addresses: string[];
+  connectedPeers: string[];
+  sparkSyncSubscribers: string[];
   error?: string | null;
 };
 
@@ -78,7 +94,7 @@ export default defineComponent({
     const rootStatus = ref<RootStatus>({ initialized: false, unlocked: false, rootId: null });
     const showRootPage = ref(false);
     const message = ref('');
-    const p2pInfo = ref<P2PInfo>({ initialized: false, started: false, peerId: null, addresses: [], error: null });
+    const p2pInfo = ref<P2PInfo>({ initialized: false, started: false, peerId: null, addresses: [], connectedPeers: [], sparkSyncSubscribers: [], error: null });
 
     const refreshStatus = async () => {
       rootStatus.value = await window.electronAPI.rootIdentity.status();
@@ -129,7 +145,7 @@ export default defineComponent({
         await window.electronAPI.rootIdentity.lock();
         showRootPage.value = false;
         message.value = '';
-        p2pInfo.value = { initialized: false, started: false, peerId: null, addresses: [], error: null };
+        p2pInfo.value = { initialized: false, started: false, peerId: null, addresses: [], connectedPeers: [], sparkSyncSubscribers: [], error: null };
         await refreshStatus();
       } catch (error) {
         console.warn('退出失败', error);
