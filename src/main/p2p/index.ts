@@ -271,16 +271,26 @@ export class P2PNode {
   async connectPeer(nodeInfo: PeerNodeInfo): Promise<void> {
     if (!this.node) throw new Error('p2p node not started');
 
+    const { multiaddr } = await runtimeImport('@multiformats/multiaddr');
     const addresses = nodeInfo.addresses.map((item) => item.trim()).filter((item) => item.length > 0);
     if (addresses.length === 0) {
       throw new Error('Member node addresses are required for p2p connect');
     }
 
+    const dialTargets = addresses.flatMap((address) => {
+      const targets = [address];
+      if (nodeInfo.peerId && !address.includes('/p2p/')) {
+        targets.push(`${address.replace(/\/$/, '')}/p2p/${nodeInfo.peerId}`);
+      }
+      return targets;
+    });
+
     let lastError: unknown = null;
-    for (const address of addresses) {
+    for (const target of dialTargets) {
       try {
-        await this.node.dial(address);
-        console.log('[p2p] connected to peer via', address);
+        const targetMultiaddr = multiaddr(target);
+        await this.node.dial(targetMultiaddr);
+        console.log('[p2p] connected to peer via', target);
         return;
       } catch (error) {
         lastError = error;
