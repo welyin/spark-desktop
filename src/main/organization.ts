@@ -179,11 +179,32 @@ export class OrganizationService {
 		const normalizedNodeInfo = normalizeNodeInfo(input.nodeInfo);
 		const existingMember = record.members.find((member) => member.rootId === normalizedMemberRootId);
 		if (existingMember) {
-			existingMember.nodeInfo = normalizedNodeInfo;
-			record.updatedAt = Date.now();
+			const updatedMember: OrganizationMember = {
+				...existingMember,
+				nodeInfo: normalizedNodeInfo
+			};
+
+			const updatedRecord: OrganizationRecord = {
+				...record,
+				updatedAt: Date.now(),
+				members: record.members.map((member) =>
+					member.rootId === normalizedMemberRootId ? updatedMember : member
+				)
+			};
+
+			if (!this.syncContext.syncOrganizationToMember) {
+				throw new Error('P2P organization sync is not configured');
+			}
+
+			await this.syncContext.syncOrganizationToMember({
+				organization: updatedRecord,
+				member: updatedMember,
+				targetRootId: normalizedMemberRootId
+			});
+
 			await this.db.open();
-			await this.db.put(organizationKey(orgId), JSON.stringify(record));
-			return this.toView(record, currentRootId);
+			await this.db.put(organizationKey(orgId), JSON.stringify(updatedRecord));
+			return this.toView(updatedRecord, currentRootId);
 		}
 
 		const newMember: OrganizationMember = {
