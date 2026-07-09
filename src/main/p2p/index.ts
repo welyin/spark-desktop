@@ -79,7 +79,9 @@ export class P2PNode {
     ];
 
     for (const candidate of candidates) {
-      if (candidate?.source && candidate?.sink) {
+      const hasLegacyIo = candidate?.source && candidate?.sink;
+      const hasMessageStreamIo = typeof candidate?.send === 'function' && typeof candidate?.[Symbol.asyncIterator] === 'function';
+      if (hasLegacyIo || hasMessageStreamIo) {
         return candidate;
       }
     }
@@ -217,7 +219,7 @@ export class P2PNode {
       throw new Error('protocol stream is unavailable');
     }
 
-    const iterator = resolvedStream.source?.[Symbol.asyncIterator]?.();
+    const iterator = resolvedStream.source?.[Symbol.asyncIterator]?.() ?? resolvedStream[Symbol.asyncIterator]?.();
     if (!iterator) {
       throw new Error('stream source is not iterable');
     }
@@ -244,9 +246,27 @@ export class P2PNode {
       throw new Error('protocol stream is unavailable');
     }
 
-    await resolvedStream.sink((async function* () {
-      yield Buffer.from(text, 'utf8');
-    })());
+    const data = Buffer.from(text, 'utf8');
+
+    if (typeof resolvedStream.sink === 'function') {
+      await resolvedStream.sink((async function* () {
+        yield data;
+      })());
+      return;
+    }
+
+    if (typeof resolvedStream.send === 'function') {
+      const writable = resolvedStream.send(data);
+      if (!writable && typeof resolvedStream.onDrain === 'function') {
+        await resolvedStream.onDrain();
+      }
+      if (typeof resolvedStream.close === 'function') {
+        await resolvedStream.close();
+      }
+      return;
+    }
+
+    throw new Error('protocol stream is not writable');
   }
 
   // org-share 的统一校验与落库逻辑，供 pubsub 与直连协议复用，避免双路径行为漂移。
