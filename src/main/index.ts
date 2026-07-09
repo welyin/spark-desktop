@@ -102,7 +102,8 @@ async function ensureCoreServicesStarted(): Promise<void> {
       initP2PNode(levelDB, {
         getCurrentRootId: async () => {
           const status = await rootIdentityManager.getStatus();
-          return status.unlocked ? status.rootId : null;
+          // P2P org-share matching should work even if identity is currently locked.
+          return status.rootId;
         }
       });
       console.log('[main] p2p node initialized with db');
