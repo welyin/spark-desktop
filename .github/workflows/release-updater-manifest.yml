@@ -72,7 +72,22 @@ jobs:
           echo "app_id=$APP_ID" >> "$GITHUB_OUTPUT"
           echo "revoked=$REVOKED" >> "$GITHUB_OUTPUT"
 
+      - name: Verify release exists for manual runs
+        id: release_check
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          if gh api "repos/${{ github.repository }}/releases/tags/${{ steps.vars.outputs.tag }}" --silent; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Release tag '${{ steps.vars.outputs.tag }}' was not found. Skipping manifest generation for this manual run. Please verify the tag exists as a GitHub Release and rerun after publishing assets."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Generate updater manifest and checksums
+        if: github.event_name == 'release' || steps.release_check.outputs.skip == 'false'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -86,12 +101,14 @@ jobs:
             --outputDir "dist/updater"
 
       - name: Sign manifest
+        if: github.event_name == 'release' || steps.release_check.outputs.skip == 'false'
         env:
           SPARK_UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.SPARK_UPDATE_SIGNING_PRIVATE_KEY }}
         run: |
           node scripts/updater/sign-manifest.mjs --outputDir "dist/updater"
 
       - name: Upload artifacts to release
+        if: github.event_name == 'release' || steps.release_check.outputs.skip == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.vars.outputs.tag }}
