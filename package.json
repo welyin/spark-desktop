@@ -29,6 +29,7 @@
   },
   "devDependencies": {
     "@electron-forge/cli": "^6.3.0",
+    "@electron-forge/maker-zip": "^6.3.0",
     "@electron-forge/plugin-vite": "latest",
     "@testing-library/vue": "^8.1.0",
     "@types/electron": "^1.6.10",
