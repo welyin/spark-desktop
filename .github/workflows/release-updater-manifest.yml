@@ -87,7 +87,7 @@ jobs:
           fi
 
       - name: Generate updater manifest and checksums
-        if: steps.release_check.outputs.skip != 'true'
+        if: github.event_name == 'release' || steps.release_check.outputs.skip != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -101,14 +101,14 @@ jobs:
             --outputDir "dist/updater"
 
       - name: Sign manifest
-        if: steps.release_check.outputs.skip != 'true'
+        if: github.event_name == 'release' || steps.release_check.outputs.skip != 'true'
         env:
           SPARK_UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.SPARK_UPDATE_SIGNING_PRIVATE_KEY }}
         run: |
           node scripts/updater/sign-manifest.mjs --outputDir "dist/updater"
 
       - name: Upload artifacts to release
-        if: steps.release_check.outputs.skip != 'true'
+        if: github.event_name == 'release' || steps.release_check.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.vars.outputs.tag }}
