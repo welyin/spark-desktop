@@ -46,6 +46,53 @@ async function fetchJson(url, token) {
   return await response.json();
 }
 
+async function tryFetchJson(url, token) {
+  const response = await fetch(url, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${token}`,
+      'X-GitHub-Api-Version': '2022-11-28'
+    }
+  });
+
+  if (!response.ok) {
+    return { ok: false, status: response.status, data: null };
+  }
+
+  return { ok: true, status: response.status, data: await response.json() };
+}
+
+async function resolveRelease({ repository, token, tag, releaseId }) {
+  if (releaseId) {
+    return await fetchJson(`https://api.github.com/repos/${repository}/releases/${releaseId}`, token);
+  }
+
+  if (!tag) {
+    throw new Error('Missing release locator: both tag and releaseId are empty');
+  }
+
+  const normalized = normalizeVersion(tag);
+  const candidates = Array.from(
+    new Set([
+      tag,
+      normalized,
+      normalized ? `v${normalized}` : ''
+    ].filter((item) => item && item.length > 0))
+  );
+
+  const attempted = [];
+  for (const candidate of candidates) {
+    const url = `https://api.github.com/repos/${repository}/releases/tags/${candidate}`;
+    const result = await tryFetchJson(url, token);
+    attempted.push(`${candidate}:${result.status}`);
+    if (result.ok) {
+      return result.data;
+    }
+  }
+
+  throw new Error(`Release not found by tag. attempted=[${attempted.join(', ')}]`);
+}
+
 async function downloadAsset(assetUrl, destination, token) {
   const response = await fetch(assetUrl, {
     headers: {
@@ -85,6 +132,7 @@ async function main() {
   const token = process.env.GITHUB_TOKEN;
   const repository = process.env.GITHUB_REPOSITORY;
   const tag = args.tag;
+  const releaseId = args.releaseId;
   const appId = args.appId ?? 'spark-desktop';
   const channel = args.channel ?? 'stable';
   const outputDir = args.outputDir ?? 'dist/updater';
@@ -100,8 +148,8 @@ async function main() {
   if (!repository) {
     throw new Error('Missing GITHUB_REPOSITORY');
   }
-  if (!tag) {
-    throw new Error('Missing --tag argument');
+  if (!tag && !releaseId) {
+    throw new Error('Missing release locator: provide --tag or --releaseId');
   }
 
   const version = normalizeVersion(args.version || tag);
@@ -109,7 +157,11 @@ async function main() {
     throw new Error('Unable to resolve release version');
   }
 
-  const release = await fetchJson(`https://api.github.com/repos/${repository}/releases/tags/${tag}`, token);
+  const release = await resolveRelease({ repository, token, tag, releaseId });
+  const resolvedTag = String(release.tag_name || tag || '').trim();
+  if (!resolvedTag) {
+    throw new Error('Resolved release does not contain tag_name');
+  }
   const assets = Array.isArray(release.assets) ? release.assets : [];
 
   const selectedAssets = assets.filter((asset) => {
@@ -123,7 +175,7 @@ async function main() {
   });
 
   if (selectedAssets.length === 0) {
-    throw new Error(`No release assets found for tag ${tag}`);
+    throw new Error(`No release assets found for tag ${resolvedTag}`);
   }
 
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'spark-updater-'));
@@ -151,7 +203,7 @@ async function main() {
       platform: inferred.platform,
       arch: inferred.arch,
       fileName,
-      url: releaseDownloadUrl(repository, tag, fileName),
+      url: releaseDownloadUrl(repository, resolvedTag, fileName),
       sha256: digest,
       size
     });

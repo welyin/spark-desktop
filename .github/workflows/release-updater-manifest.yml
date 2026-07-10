@@ -53,12 +53,14 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "release" ]]; then
             TAG="${{ github.event.release.tag_name }}"
+            RELEASE_ID="${{ github.event.release.id }}"
             VERSION="${TAG#v}"
             CHANNEL="stable"
             APP_ID="spark-desktop"
             REVOKED=""
           else
             TAG="${{ inputs.tag }}"
+            RELEASE_ID=""
             VERSION="${{ inputs.version }}"
             if [[ -z "$VERSION" ]]; then VERSION="${TAG#v}"; fi
             CHANNEL="${{ inputs.channel }}"
@@ -67,6 +69,7 @@ jobs:
           fi
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
           echo "app_id=$APP_ID" >> "$GITHUB_OUTPUT"
@@ -79,7 +82,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          if gh api "repos/${{ github.repository }}/releases/tags/${{ steps.vars.outputs.tag }}" --silent; then
+          TAG="${{ steps.vars.outputs.tag }}"
+          NORMALIZED="${TAG#v}"
+
+          if gh api "repos/${{ github.repository }}/releases/tags/$TAG" --silent || \
+             gh api "repos/${{ github.repository }}/releases/tags/$NORMALIZED" --silent || \
+             gh api "repos/${{ github.repository }}/releases/tags/v$NORMALIZED" --silent; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::Release tag '${{ steps.vars.outputs.tag }}' was not found. Skipping manifest generation for this manual run. Please verify the tag exists as a GitHub Release and rerun after publishing assets."
@@ -94,6 +102,7 @@ jobs:
         run: |
           node scripts/updater/build-release-manifest.mjs \
             --tag "${{ steps.vars.outputs.tag }}" \
+            --releaseId "${{ steps.vars.outputs.release_id }}" \
             --version "${{ steps.vars.outputs.version }}" \
             --channel "${{ steps.vars.outputs.channel }}" \
             --appId "${{ steps.vars.outputs.app_id }}" \
