@@ -72,7 +72,27 @@ jobs:
           echo "app_id=$APP_ID" >> "$GITHUB_OUTPUT"
           echo "revoked=$REVOKED" >> "$GITHUB_OUTPUT"
 
+      - name: Verify release exists for manual runs
+        id: release_check
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          STATUS="$(curl -sS -o /dev/null -w "%{http_code}" \
+            -u "x-access-token:${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ steps.vars.outputs.tag }}")"
+          if [[ "$STATUS" != "200" ]]; then
+            echo "::warning::Release tag '${{ steps.vars.outputs.tag }}' was not found (HTTP $STATUS). Skipping manifest generation for this manual run."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Generate updater manifest and checksums
+        if: github.event_name != 'workflow_dispatch' || steps.release_check.outputs.skip != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -86,12 +106,14 @@ jobs:
             --outputDir "dist/updater"
 
       - name: Sign manifest
+        if: github.event_name != 'workflow_dispatch' || steps.release_check.outputs.skip != 'true'
         env:
           SPARK_UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.SPARK_UPDATE_SIGNING_PRIVATE_KEY }}
         run: |
           node scripts/updater/sign-manifest.mjs --outputDir "dist/updater"
 
       - name: Upload artifacts to release
+        if: github.event_name != 'workflow_dispatch' || steps.release_check.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.vars.outputs.tag }}
