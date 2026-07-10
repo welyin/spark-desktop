@@ -1,0 +1,102 @@
+name: Release Updater Manifest
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (example: v0.2.0)"
+        required: true
+        type: string
+      version:
+        description: "App version in manifest (optional, default from tag)"
+        required: false
+        type: string
+      channel:
+        description: "Update channel"
+        required: false
+        default: stable
+        type: choice
+        options:
+          - stable
+          - canary
+      appId:
+        description: "App ID"
+        required: false
+        default: spark-desktop
+        type: string
+      revoked:
+        description: "Comma-separated revoked versions"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-manifest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Resolve release variables
+        id: vars
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            TAG="${{ github.event.release.tag_name }}"
+            VERSION="${TAG#v}"
+            CHANNEL="stable"
+            APP_ID="spark-desktop"
+            REVOKED=""
+          else
+            TAG="${{ inputs.tag }}"
+            VERSION="${{ inputs.version }}"
+            if [[ -z "$VERSION" ]]; then VERSION="${TAG#v}"; fi
+            CHANNEL="${{ inputs.channel }}"
+            APP_ID="${{ inputs.appId }}"
+            REVOKED="${{ inputs.revoked }}"
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "app_id=$APP_ID" >> "$GITHUB_OUTPUT"
+          echo "revoked=$REVOKED" >> "$GITHUB_OUTPUT"
+
+      - name: Generate updater manifest and checksums
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          node scripts/updater/build-release-manifest.mjs \
+            --tag "${{ steps.vars.outputs.tag }}" \
+            --version "${{ steps.vars.outputs.version }}" \
+            --channel "${{ steps.vars.outputs.channel }}" \
+            --appId "${{ steps.vars.outputs.app_id }}" \
+            --revoked "${{ steps.vars.outputs.revoked }}" \
+            --outputDir "dist/updater"
+
+      - name: Sign manifest
+        env:
+          SPARK_UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.SPARK_UPDATE_SIGNING_PRIVATE_KEY }}
+        run: |
+          node scripts/updater/sign-manifest.mjs --outputDir "dist/updater"
+
+      - name: Upload artifacts to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          files: |
+            dist/updater/spark-manifest.json
+            dist/updater/spark-manifest.sig
+            dist/updater/spark-checksums.txt
+            dist/updater/spark-manifest.pub.pem

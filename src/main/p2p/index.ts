@@ -5,6 +5,11 @@ import type { LevelDB } from '../db/base';
 import { P2PNode } from './p2p-node';
 import type { P2PIdentityContext } from './types';
 
+type P2PNodeRuntimeOptions = {
+  appVersion?: string;
+  onPeerVersionObserved?: (version: string, peerId: string) => Promise<void> | void;
+};
+
 export type { LocalP2PNodeInfo, P2PIdentityContext, P2PMessageBody, PeerNodeInfo } from './types';
 export { P2PNode } from './p2p-node';
 
@@ -15,11 +20,15 @@ let p2pNodeInstance: P2PNode | null = null;
  *
  * 约束：主进程只允许初始化一次，重复调用会抛错，防止重复绑定网络事件。
  */
-export function initP2PNode(db: LevelDB, identityContext?: P2PIdentityContext): P2PNode {
+export function initP2PNode(
+  db: LevelDB,
+  identityContext?: P2PIdentityContext,
+  runtimeOptions?: P2PNodeRuntimeOptions
+): P2PNode {
   if (p2pNodeInstance) {
     throw new Error('P2P node already initialized. Call initP2PNode only once.');
   }
-  p2pNodeInstance = new P2PNode(db, identityContext);
+  p2pNodeInstance = new P2PNode(db, identityContext, runtimeOptions);
   return p2pNodeInstance;
 }
 

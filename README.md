@@ -117,6 +117,89 @@ npm run build:all
 * 骨架向插件开放标准化 API：数据读写、社区广播、身份校验、UI 界面注入
 * 详细开发规范请参考 [插件开发文档](./docs/plugin-dev.md)
 
+## 主程序热更新（GitHub 发布中心）
+
+当前已接入第一阶段更新链路：
+
+1. Manifest 签名校验（Ed25519 公钥内置/环境注入）
+2. 更新包 SHA-256 完整性校验
+3. 反回滚（记录本地最高已接受版本）
+4. 平台签名主体校验（macOS 通过 `spctl`）
+
+### 运行时环境变量
+
+* `SPARK_UPDATE_APP_ID`：应用标识，默认 `spark-desktop`
+* `SPARK_UPDATE_CHANNEL`：更新通道，默认 `stable`
+* `SPARK_UPDATE_MANIFEST_URL`：manifest 地址
+* `SPARK_UPDATE_SIGNATURE_URL`：manifest 签名地址（base64）
+* `SPARK_UPDATE_PUBLIC_KEY_PEM`：受信任公钥（必填）
+
+`SPARK_UPDATE_PUBLIC_KEY_PEM` 支持多公钥轮换，多个 PEM 使用 `@@` 拼接。
+
+### Manifest 最小示例
+
+```json
+{
+   "manifestVersion": 1,
+   "appId": "spark-desktop",
+   "channel": "stable",
+   "version": "0.2.0",
+   "releaseTime": "2026-07-10T00:00:00.000Z",
+   "critical": false,
+   "revokedVersions": ["0.1.0"],
+   "assets": [
+      {
+         "kind": "full",
+         "platform": "darwin",
+         "arch": "arm64",
+         "fileName": "spark-desktop-darwin-arm64-v0.2.0.dmg",
+         "url": "https://github.com/welyin/spark-desktop/releases/download/v0.2.0/spark-desktop-darwin-arm64-v0.2.0.dmg",
+         "sha256": "<sha256-hex>",
+         "size": 123456789,
+         "codeSignSubject": "Developer ID Application: <Team Name> (<TeamID>)"
+      }
+   ]
+}
+```
+
+### IPC 接口（系统域）
+
+* `update-status`：获取更新器状态快照
+* `update-check`：主动检查更新
+* `update-stage-latest`：下载并校验最新全量包到本地 staging
+* `update-apply-restart`：写入待安装状态并重启主程序
+* `update-observe-peer-version`：接收对端版本触发检查（不直接信任对端包）
+
+### GitHub Actions 联动
+
+仓库已提供工作流 [release-updater-manifest.yml](.github/workflows/release-updater-manifest.yml)：
+
+1. 在 Release 发布后自动拉取该版本资产。
+2. 计算每个安装包 SHA-256 与大小。
+3. 生成 `spark-manifest.json` 与 `spark-checksums.txt`。
+4. 使用发布私钥签名生成 `spark-manifest.sig`。
+5. 回传上传到同一个 GitHub Release。
+
+必须在 GitHub 仓库设置的 Secret：
+
+* `SPARK_UPDATE_SIGNING_PRIVATE_KEY`：Ed25519 私钥 PEM（仅用于 CI 签名）
+
+本地开发可使用仓库根目录私钥文件（已加入忽略，不会提交）：
+
+* `.secrets/spark-update-signing-private-key.pem`
+* `.secrets/spark-update-signing-public-key.pem`
+
+必须在客户端运行环境提供的变量（或通过代码内置默认值覆盖）：
+
+* `SPARK_UPDATE_PUBLIC_KEY_PEM`：与上面私钥对应的公钥 PEM（可多 key，用 `@@` 分隔）；未设置时默认使用代码内置公钥
+* `SPARK_UPDATE_MANIFEST_URL`
+* `SPARK_UPDATE_SIGNATURE_URL`
+
+说明：
+
+* GitHub Actions 可以直接写入 Release 资产，但无法替你在仓库后台自动创建 Secret。
+* `SPARK_UPDATE_SIGNING_PRIVATE_KEY` 只能放在 GitHub Secret 或 KMS，严禁提交到仓库。
+
 ## 隐私与安全
 
 1. **本地优先原则**：所有原始业务数据仅存储于用户本地设备，敏感个人信息不全网广播、不上链。

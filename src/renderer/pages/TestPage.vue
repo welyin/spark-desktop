@@ -57,6 +57,68 @@
         </el-card>
       </div>
     </el-card>
+
+    <el-card class="nested updater-panel">
+      <div class="panel-title">
+        <div>
+          <h2>更新调试面板</h2>
+          <p class="subtitle">用于联调 GitHub Releases 更新链路：检查、下载、应用重启。</p>
+        </div>
+        <el-button @click="refreshUpdaterStatus" :loading="loadingUpdater">刷新状态</el-button>
+      </div>
+
+      <el-alert v-if="updaterMessage" class="message" :title="updaterMessage" type="info" :closable="false" show-icon />
+
+      <el-descriptions :column="1" border>
+        <el-descriptions-item label="是否已配置">{{ updaterStatus?.configured ? '是' : '否' }}</el-descriptions-item>
+        <el-descriptions-item label="应用标识">{{ updaterStatus?.appId || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="通道">{{ updaterStatus?.channel || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="当前版本">{{ updaterStatus?.currentVersion || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="最高接受版本">{{ updaterStatus?.highestAcceptedVersion || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="最近检查">
+          <template v-if="updaterStatus?.latestCheck">
+            {{ formatDate(updaterStatus.latestCheck.checkedAt) }} · {{ updaterStatus.latestCheck.reason }}
+          </template>
+          <template v-else>暂无</template>
+        </el-descriptions-item>
+        <el-descriptions-item label="可用版本">{{ updaterStatus?.latestCheck?.availableVersion || '无' }}</el-descriptions-item>
+        <el-descriptions-item label="已暂存安装包">
+          <template v-if="updaterStatus?.staged">
+            {{ updaterStatus.staged.fileName }} ({{ updaterStatus.staged.version }})
+          </template>
+          <template v-else>无</template>
+        </el-descriptions-item>
+      </el-descriptions>
+
+      <div class="row">
+        <el-button type="primary" @click="checkUpdates" :loading="checkingUpdate" :disabled="checkingUpdate">检查更新</el-button>
+        <el-button @click="stageLatestUpdate" :loading="stagingUpdate" :disabled="stagingUpdate">下载并校验</el-button>
+        <el-button type="danger" plain @click="applyUpdateRestart" :loading="applyingUpdate" :disabled="applyingUpdate">
+          应用并重启
+        </el-button>
+      </div>
+
+      <el-card shadow="never" class="nested">
+        <template #header>
+          <h3>对端版本观测</h3>
+        </template>
+        <div v-if="!updaterStatus?.peerObservations?.length" class="empty-state">暂无观测记录。</div>
+        <el-table v-else :data="updaterStatus.peerObservations" size="small" stripe>
+          <el-table-column prop="peerId" label="PeerId" min-width="220" />
+          <el-table-column prop="observedVersion" label="对端版本" width="130" />
+          <el-table-column label="观测时间" min-width="170">
+            <template #default="scope">{{ formatDate(scope.row.observedAt) }}</template>
+          </el-table-column>
+          <el-table-column label="触发检查" width="100">
+            <template #default="scope">
+              <el-tag :type="scope.row.triggeredCheck ? 'success' : 'info'" effect="plain">
+                {{ scope.row.triggeredCheck ? '是' : '否' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-card>
+    </el-card>
   </section>
 </template>
 
@@ -76,6 +138,38 @@ type SavedNodeRecord = {
   cumulativeConnectedMs: number;
   currentSessionConnectedAt?: number;
   lastError?: string;
+};
+
+type UpdaterStatus = {
+  configured: boolean;
+  appId: string;
+  channel: 'stable' | 'canary';
+  currentVersion: string;
+  highestAcceptedVersion: string;
+  latestCheck: {
+    checkedAt: number;
+    source: 'manual' | 'startup' | 'peer-observed';
+    currentVersion: string;
+    availableVersion: string | null;
+    updateAvailable: boolean;
+    critical: boolean;
+    revokedCurrentVersion: boolean;
+    reason: string;
+  } | null;
+  staged: {
+    version: string;
+    filePath: string;
+    fileName: string;
+    sha256: string;
+    size: number;
+    stagedAt: number;
+  } | null;
+  peerObservations: Array<{
+    peerId: string;
+    observedVersion: string;
+    observedAt: number;
+    triggeredCheck: boolean;
+  }>;
 };
 
 export default defineComponent({
@@ -100,6 +194,12 @@ export default defineComponent({
     const loadingNodes = ref(false);
     const syncingNodeKey = ref('');
     const nodeMessage = ref('');
+    const updaterStatus = ref<UpdaterStatus | null>(null);
+    const updaterMessage = ref('');
+    const loadingUpdater = ref(false);
+    const checkingUpdate = ref(false);
+    const stagingUpdate = ref(false);
+    const applyingUpdate = ref(false);
 
     const parseNodeRecord = (key: string, value: string): SavedNodeRecord | null => {
       try {
@@ -156,6 +256,59 @@ export default defineComponent({
       }
     };
 
+    const refreshUpdaterStatus = async () => {
+      loadingUpdater.value = true;
+      try {
+        updaterStatus.value = await window.electronAPI.updater.status();
+      } catch (error) {
+        updaterMessage.value = `读取更新状态失败：${error}`;
+      } finally {
+        loadingUpdater.value = false;
+      }
+    };
+
+    const checkUpdates = async () => {
+      checkingUpdate.value = true;
+      updaterMessage.value = '';
+      try {
+        const result = await window.electronAPI.updater.check();
+        updaterMessage.value = result.updateAvailable
+          ? `检测到新版本：${result.availableVersion}`
+          : '当前已是最新版本';
+        await refreshUpdaterStatus();
+      } catch (error) {
+        updaterMessage.value = `检查更新失败：${error}`;
+      } finally {
+        checkingUpdate.value = false;
+      }
+    };
+
+    const stageLatestUpdate = async () => {
+      stagingUpdate.value = true;
+      updaterMessage.value = '';
+      try {
+        const staged = await window.electronAPI.updater.stageLatest();
+        updaterMessage.value = `已下载并校验：${staged.fileName}`;
+        await refreshUpdaterStatus();
+      } catch (error) {
+        updaterMessage.value = `下载更新失败：${error}`;
+      } finally {
+        stagingUpdate.value = false;
+      }
+    };
+
+    const applyUpdateRestart = async () => {
+      applyingUpdate.value = true;
+      updaterMessage.value = '';
+      try {
+        await window.electronAPI.updater.applyRestart();
+        updaterMessage.value = '正在重启应用以安装更新...';
+      } catch (error) {
+        updaterMessage.value = `应用更新失败：${error}`;
+        applyingUpdate.value = false;
+      }
+    };
+
     const formatDate = (timestamp: number) => {
       return new Intl.DateTimeFormat('zh-CN', {
         year: 'numeric',
@@ -177,6 +330,7 @@ export default defineComponent({
 
     onMounted(() => {
       void refreshNodes();
+      void refreshUpdaterStatus();
     });
 
     return {
@@ -184,8 +338,18 @@ export default defineComponent({
       loadingNodes,
       syncingNodeKey,
       nodeMessage,
+      updaterStatus,
+      updaterMessage,
+      loadingUpdater,
+      checkingUpdate,
+      stagingUpdate,
+      applyingUpdate,
       refreshNodes,
       syncNode,
+      refreshUpdaterStatus,
+      checkUpdates,
+      stageLatestUpdate,
+      applyUpdateRestart,
       formatDate,
       formatDuration
     };
@@ -265,6 +429,10 @@ export default defineComponent({
 .status {
   margin-top: 8px;
   color: #333;
+}
+
+.message {
+  margin-bottom: 12px;
 }
 
 .address-text,

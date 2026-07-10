@@ -5,6 +5,7 @@ import { initP2PNode, getP2PNode, isP2PInitialized } from './p2p/index';
 import { registerDomain, unregisterDomain, getDomain, isSystemDomain, isValidPluginDomain } from './domain-registry';
 import { OrganizationService } from './organization/index';
 import { rootIdentityManager } from './identity';
+import { initUpdaterService, getUpdaterService } from './updater';
 
 /**
  * 从 IPC 事件中获取可信的调用者域
@@ -33,6 +34,11 @@ function requireAccess(event: IpcMainInvokeEvent, targetDomain: string | null): 
     throw new Error('Access denied: unregistered caller domain');
   }
   verifyAccess(caller, targetDomain);
+}
+
+function registerInvokeHandler(channel: string, handler: Parameters<typeof ipcMain.handle>[1]): void {
+  ipcMain.removeHandler(channel);
+  ipcMain.handle(channel, handler);
 }
 
 function resolveDevServerUrl(): string | null {
@@ -104,6 +110,12 @@ async function ensureCoreServicesStarted(): Promise<void> {
           const status = await rootIdentityManager.getStatus();
           // P2P org-share matching should work even if identity is currently locked.
           return status.rootId;
+        }
+      }, {
+        appVersion: app.getVersion(),
+        onPeerVersionObserved: async (version, peerId) => {
+          console.log('[main] observed peer app version', { peerId, version });
+          await getUpdaterService().observePeerVersion(version, peerId);
         }
       });
       console.log('[main] p2p node initialized with db');
@@ -211,38 +223,16 @@ function createWindow() {
   win.webContents.openDevTools({ mode: 'right' });
 }
 
-app.whenReady().then(async () => {
-  try {
-    await ensureCoreServicesStarted();
-  } catch (error) {
-    console.error('[main] failed to start core services automatically', error);
-  }
+app.whenReady().then(() => {
+  initUpdaterService();
 
-  createWindow();
-
-  // 查询当前窗口的可信域（只读，供 preload 展示用）
-  ipcMain.handle('get-current-domain', (event) => {
-    return { domain: getCallerDomain(event) };
-  });
-
-  ipcMain.handle('plugin-open-view', (event, pluginDomain: string, pluginView = 'default') => {
-    requireSystemDomain(event);
-
-    if (!isValidPluginDomain(pluginDomain)) {
-      throw new Error(`Invalid plugin domain: ${pluginDomain}`);
-    }
-
-    const view = typeof pluginView === 'string' && pluginView.trim().length > 0 ? pluginView : 'default';
-    const pluginWindow = createPluginWindow(pluginDomain, view);
-    return { success: true, windowId: pluginWindow.webContents.id };
-  });
-
-  ipcMain.handle('root-status', async (event) => {
+  // 关键身份 IPC 先行注册，避免启动阶段异步任务导致首屏请求无 handler。
+  registerInvokeHandler('root-status', async (event) => {
     requireSystemDomain(event);
     return await rootIdentityManager.getStatus();
   });
 
-  ipcMain.handle('root-init', async (event, password: string) => {
+  registerInvokeHandler('root-init', async (event, password: string) => {
     requireSystemDomain(event);
     const result = await rootIdentityManager.initialize(password);
     return {
@@ -251,9 +241,13 @@ app.whenReady().then(async () => {
     };
   });
 
-  ipcMain.handle('root-unlock', async (event, password: string) => {
+  registerInvokeHandler('root-unlock', async (event, password: string) => {
     requireSystemDomain(event);
     const result = await rootIdentityManager.unlock(password);
+
+    void getUpdaterService().checkForUpdates('startup').catch((error) => {
+      console.warn('[main] post-login update check failed', error);
+    });
 
     // 登录成功后立即返回给 UI，后台异步执行节点重连与数据对账。
     void (async () => {
@@ -270,55 +264,72 @@ app.whenReady().then(async () => {
     return result;
   });
 
-  ipcMain.handle('root-lock', (event) => {
+  registerInvokeHandler('root-lock', (event) => {
     requireSystemDomain(event);
     rootIdentityManager.lock();
     return { success: true };
   });
 
-  ipcMain.handle('root-sign', (event, payload: string) => {
+  registerInvokeHandler('root-sign', (event, payload: string) => {
     requireSystemDomain(event);
     return rootIdentityManager.sign(payload);
   });
 
-  ipcMain.handle('root-derive-domain', (event, domain: string) => {
+  registerInvokeHandler('root-derive-domain', (event, domain: string) => {
     requireSystemDomain(event);
     return rootIdentityManager.deriveDomainIdentity(domain);
   });
 
-  ipcMain.handle('org-list-mine', async (event) => {
+  // 查询当前窗口的可信域（只读，供 preload 展示用）
+  registerInvokeHandler('get-current-domain', (event) => {
+    return { domain: getCallerDomain(event) };
+  });
+
+  registerInvokeHandler('plugin-open-view', (event, pluginDomain: string, pluginView = 'default') => {
+    requireSystemDomain(event);
+
+    if (!isValidPluginDomain(pluginDomain)) {
+      throw new Error(`Invalid plugin domain: ${pluginDomain}`);
+    }
+
+    const view = typeof pluginView === 'string' && pluginView.trim().length > 0 ? pluginView : 'default';
+    const pluginWindow = createPluginWindow(pluginDomain, view);
+    return { success: true, windowId: pluginWindow.webContents.id };
+  });
+
+  registerInvokeHandler('org-list-mine', async (event) => {
     requireSystemDomain(event);
     return await organizationService.listMine();
   });
 
-  ipcMain.handle('org-create', async (event, input: { name: string; description?: string }) => {
+  registerInvokeHandler('org-create', async (event, input: { name: string; description?: string }) => {
     requireSystemDomain(event);
     return await organizationService.createOrganization(input);
   });
 
-  ipcMain.handle('org-delete', async (event, orgId: string) => {
+  registerInvokeHandler('org-delete', async (event, orgId: string) => {
     requireSystemDomain(event);
     return await organizationService.deleteOrganization(orgId);
   });
 
-  ipcMain.handle('org-add-member', async (event, orgId: string, input: { rootId: string; nodeInfo: { peerId?: string; addresses: string[] } }) => {
+  registerInvokeHandler('org-add-member', async (event, orgId: string, input: { rootId: string; nodeInfo: { peerId?: string; addresses: string[] } }) => {
     requireSystemDomain(event);
     return await organizationService.addMember(orgId, input);
   });
 
-  ipcMain.handle('org-remove-member', async (event, orgId: string, memberRootId: string) => {
+  registerInvokeHandler('org-remove-member', async (event, orgId: string, memberRootId: string) => {
     requireSystemDomain(event);
     return await organizationService.removeMember(orgId, memberRootId);
   });
 
-  ipcMain.handle('db-open', async (event) => {
+  registerInvokeHandler('db-open', async (event) => {
     requireSystemDomain(event);
     await ensureCoreServicesStarted();
 
     return { path: levelDB.path, open: levelDB.isOpen };
   });
 
-  ipcMain.handle('db-close', async (event) => {
+  registerInvokeHandler('db-close', async (event) => {
     requireSystemDomain(event);
     if (isP2PInitialized() && getP2PNode().isStarted()) {
       await getP2PNode().stop();
@@ -327,27 +338,27 @@ app.whenReady().then(async () => {
     return { open: levelDB.isOpen };
   });
 
-  ipcMain.handle('db-get', async (event, key: string) => {
+  registerInvokeHandler('db-get', async (event, key: string) => {
     const target = parseDomainFromKey(key);
     requireAccess(event, target);
     return await levelDB.get(key);
   });
 
-  ipcMain.handle('db-put', async (event, key: string, value: string) => {
+  registerInvokeHandler('db-put', async (event, key: string, value: string) => {
     const target = parseDomainFromKey(key);
     requireAccess(event, target);
     await levelDB.put(key, value);
     return { success: true };
   });
 
-  ipcMain.handle('db-del', async (event, key: string) => {
+  registerInvokeHandler('db-del', async (event, key: string) => {
     const target = parseDomainFromKey(key);
     requireAccess(event, target);
     await levelDB.del(key);
     return { success: true };
   });
 
-  ipcMain.handle('db-batch', async (event, operations: any[]) => {
+  registerInvokeHandler('db-batch', async (event, operations: any[]) => {
     for (const op of operations) {
       const target = parseDomainFromKey(String(op.key));
       requireAccess(event, target);
@@ -356,7 +367,7 @@ app.whenReady().then(async () => {
     return { success: true };
   });
 
-  ipcMain.handle('db-path', (event) => {
+  registerInvokeHandler('db-path', (event) => {
     // 已注册的域都可以查看路径
     if (!getCallerDomain(event)) {
       throw new Error('Access denied: unregistered caller');
@@ -364,28 +375,28 @@ app.whenReady().then(async () => {
     return { path: levelDB.path };
   });
 
-  ipcMain.handle('db-status', (event) => {
+  registerInvokeHandler('db-status', (event) => {
     if (!getCallerDomain(event)) {
       throw new Error('Access denied: unregistered caller');
     }
     return { open: levelDB.isOpen };
   });
 
-  ipcMain.handle('db-query', async (event, prefix: string) => {
+  registerInvokeHandler('db-query', async (event, prefix: string) => {
     const target = parseDomainFromKey(prefix);
     requireAccess(event, target);
     const items = await levelDB.queryRange({ prefix, start: prefix, end: `${prefix}\xFF` });
     return items;
   });
 
-  ipcMain.handle('evidence-head-hash', async (event) => {
+  registerInvokeHandler('evidence-head-hash', async (event) => {
     if (!getCallerDomain(event)) {
       throw new Error('Access denied: unregistered caller');
     }
     return { hash: await getEvidenceHeadHash(levelDB) };
   });
 
-  ipcMain.handle('evidence-verify', async (event) => {
+  registerInvokeHandler('evidence-verify', async (event) => {
     if (!getCallerDomain(event)) {
       throw new Error('Access denied: unregistered caller');
     }
@@ -393,7 +404,7 @@ app.whenReady().then(async () => {
   });
 
   // P2P IPC handlers
-  ipcMain.handle('p2p-start', async (event) => {
+  registerInvokeHandler('p2p-start', async (event) => {
     requireSystemDomain(event);
     if (!isP2PInitialized() || !levelDB.isOpen) {
       await ensureCoreServicesStarted();
@@ -406,7 +417,7 @@ app.whenReady().then(async () => {
     }
   });
 
-  ipcMain.handle('p2p-stop', async (event) => {
+  registerInvokeHandler('p2p-stop', async (event) => {
     requireSystemDomain(event);
     if (!isP2PInitialized()) {
       return { started: false };
@@ -419,7 +430,7 @@ app.whenReady().then(async () => {
     }
   });
 
-  ipcMain.handle('p2p-broadcast', async (event, topic: string, message: any) => {
+  registerInvokeHandler('p2p-broadcast', async (event, topic: string, message: any) => {
     const targetDomain = message?.domain ?? null;
     requireAccess(event, targetDomain);
     if (!isP2PInitialized()) {
@@ -429,7 +440,7 @@ app.whenReady().then(async () => {
     return { success: true };
   });
 
-  ipcMain.handle('p2p-info', async (event) => {
+  registerInvokeHandler('p2p-info', async (event) => {
     requireSystemDomain(event);
 
     if (!isP2PInitialized() || !getP2PNode().isStarted()) {
@@ -457,7 +468,7 @@ app.whenReady().then(async () => {
     };
   });
 
-  ipcMain.handle('p2p-sync-peer-organizations', async (event, targetPeer: { peerId?: string; addresses: string[] }) => {
+  registerInvokeHandler('p2p-sync-peer-organizations', async (event, targetPeer: { peerId?: string; addresses: string[] }) => {
     requireSystemDomain(event);
 
     if (!isP2PInitialized() || !getP2PNode().isStarted()) {
@@ -484,6 +495,55 @@ app.whenReady().then(async () => {
       skipped: pullResult.skipped
     };
   });
+
+  registerInvokeHandler('update-status', async (event) => {
+    requireSystemDomain(event);
+    return await getUpdaterService().getSnapshot();
+  });
+
+  registerInvokeHandler('update-check', async (event) => {
+    requireSystemDomain(event);
+    return await getUpdaterService().checkForUpdates('manual');
+  });
+
+  registerInvokeHandler('update-stage-latest', async (event) => {
+    requireSystemDomain(event);
+    return await getUpdaterService().stageLatestFullUpdate();
+  });
+
+  registerInvokeHandler('update-apply-restart', async (event) => {
+    requireSystemDomain(event);
+    return await getUpdaterService().applyStagedUpdateAndRestart();
+  });
+
+  registerInvokeHandler('update-observe-peer-version', async (event, version: string) => {
+    requireSystemDomain(event);
+    await getUpdaterService().observePeerVersion(version);
+    return { success: true };
+  });
+
+  createWindow();
+
+  // 后台启动核心服务，避免阻塞 IPC 注册。
+  void (async () => {
+    try {
+      await getUpdaterService().processPendingInstall();
+    } catch (error) {
+      console.warn('[main] failed to process pending installer', error);
+    }
+
+    try {
+      await ensureCoreServicesStarted();
+    } catch (error) {
+      console.error('[main] failed to start core services automatically', error);
+    }
+
+    try {
+      await getUpdaterService().checkForUpdates('startup');
+    } catch (error) {
+      console.warn('[main] startup update check skipped', error);
+    }
+  })();
 });
 
 app.on('window-all-closed', () => {

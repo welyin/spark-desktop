@@ -4,6 +4,11 @@
 export const DIRECT_ORG_SHARE_PROTOCOL = '/spark/org-share/1.0.0';
 
 /**
+ * 对端版本探测协议：连接建立后请求远端返回当前应用版本。
+ */
+export const DIRECT_VERSION_PROTOCOL = '/spark/version/1.0.0';
+
+/**
  * 本地持久化 libp2p 私钥的数据库键，确保同设备 PeerId 稳定。
  */
 export const P2P_IDENTITY_PRIVATE_KEY = 'p2p:identity:privateKey';

@@ -50,6 +50,13 @@ const api = {
     sign: (payload) => ipcRenderer.invoke('root-sign', payload),
     deriveDomain: (domain) => ipcRenderer.invoke('root-derive-domain', domain)
   },
+  updater: {
+    status: () => ipcRenderer.invoke('update-status'),
+    check: () => ipcRenderer.invoke('update-check'),
+    stageLatest: () => ipcRenderer.invoke('update-stage-latest'),
+    applyRestart: () => ipcRenderer.invoke('update-apply-restart'),
+    observePeerVersion: (version) => ipcRenderer.invoke('update-observe-peer-version', version)
+  },
   getDomain: () => ipcRenderer.invoke('get-current-domain')
 };
 

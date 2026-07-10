@@ -1,14 +1,20 @@
 import crypto from 'crypto';
 import type { LevelDB } from '../db/base';
 import { getEvidenceHeadHash } from '../db/evidence';
-import { DIRECT_ORG_SHARE_PROTOCOL } from './constants';
+import { DIRECT_ORG_SHARE_PROTOCOL, DIRECT_VERSION_PROTOCOL } from './constants';
 import { getOrCreateLibp2pPrivateKey } from './identity-store';
 import { PeerActivityStore } from './peer-activity-store';
 import { buildDialTargets, extractPeerId, normalizePeerIdList } from './peer-targets';
 import { OrgShareSyncService } from './org-share-sync';
 import { createPubsubMessageHandler } from './pubsub-message-handler';
+import { parseJsonSafely, readStreamAsString, writeStringToStream } from './stream-utils';
 import type { LocalP2PNodeInfo, P2PIdentityContext, P2PMessageBody, PeerNodeInfo } from './types';
 const runtimeImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
+
+type P2PRuntimeOptions = {
+  appVersion?: string;
+  onPeerVersionObserved?: (version: string, peerId: string) => Promise<void> | void;
+};
 
 /**
  * P2P 节点编排器。
@@ -26,11 +32,18 @@ export class P2PNode {
   public nodeId: string = 'local-node';
   private readonly peerActivity: PeerActivityStore;
   private readonly orgShare: OrgShareSyncService;
+  private readonly appVersion: string;
+  private readonly onPeerVersionObserved?: (version: string, peerId: string) => Promise<void> | void;
+  private readonly versionProbeInFlight = new Set<string>();
 
   constructor(
     private readonly db: LevelDB,
-    private readonly identityContext?: P2PIdentityContext
+    private readonly identityContext?: P2PIdentityContext,
+    runtimeOptions?: P2PRuntimeOptions
   ) {
+    this.appVersion = runtimeOptions?.appVersion ?? '0.0.0';
+    this.onPeerVersionObserved = runtimeOptions?.onPeerVersionObserved;
+
     this.peerActivity = new PeerActivityStore(this.db, extractPeerId);
     this.orgShare = new OrgShareSyncService({
       db: this.db,
@@ -61,6 +74,63 @@ export class P2PNode {
 
   private async markPeerDisconnected(peerId: string): Promise<void> {
     await this.peerActivity.markDisconnected(peerId);
+  }
+
+  private getConnectedRemotePeer(peerId: string): any | null {
+    if (!this.node || typeof this.node.getConnections !== 'function') {
+      return null;
+    }
+
+    const connections = this.node.getConnections();
+    if (!Array.isArray(connections)) {
+      return null;
+    }
+
+    for (const connection of connections) {
+      const remotePeer = connection?.remotePeer;
+      if (!remotePeer) {
+        continue;
+      }
+      const normalized = typeof remotePeer.toString === 'function' ? remotePeer.toString() : String(remotePeer);
+      if (normalized === peerId) {
+        return remotePeer;
+      }
+    }
+
+    return null;
+  }
+
+  private async observePeerVersionByDirectProtocol(peerId: string): Promise<void> {
+    if (!this.node || this.versionProbeInFlight.has(peerId)) {
+      return;
+    }
+
+    const remotePeer = this.getConnectedRemotePeer(peerId);
+    if (!remotePeer) {
+      return;
+    }
+
+    this.versionProbeInFlight.add(peerId);
+    try {
+      const opened = await this.node.dialProtocol(remotePeer, DIRECT_VERSION_PROTOCOL);
+      const text = await readStreamAsString(opened, 2500);
+      const payload = parseJsonSafely(text, 'peer-version-response');
+      const version = typeof payload?.appVersion === 'string' ? payload.appVersion.trim() : '';
+      if (!version) {
+        return;
+      }
+
+      if (this.onPeerVersionObserved) {
+        await this.onPeerVersionObserved(version, peerId);
+      }
+    } catch (error) {
+      console.warn('[p2p] peer version observe failed', {
+        peerId,
+        error: String(error)
+      });
+    } finally {
+      this.versionProbeInFlight.delete(peerId);
+    }
   }
 
   /** 获取 topic 订阅者（标准化为字符串 peerId）。 */
@@ -216,6 +286,7 @@ export class P2PNode {
           console.log('[p2p] peer connected', peerId);
           if (peerId !== 'unknown') {
             await this.markPeerConnected(peerId);
+            void this.observePeerVersionByDirectProtocol(peerId);
           }
         });
 
@@ -233,6 +304,17 @@ export class P2PNode {
           await this.orgShare.handleDirectIncoming(incoming);
         });
         console.log('[p2p] direct org-share protocol registered', DIRECT_ORG_SHARE_PROTOCOL);
+
+        this.node.handle(DIRECT_VERSION_PROTOCOL, async (incoming: any) => {
+          const response = JSON.stringify({
+            type: 'peer-version',
+            appVersion: this.appVersion,
+            nodeId: this.nodeId,
+            timestamp: Date.now()
+          });
+          await writeStringToStream(incoming, response);
+        });
+        console.log('[p2p] direct version protocol registered', DIRECT_VERSION_PROTOCOL);
       }
 
       const syncTopic = 'spark-sync';
@@ -315,6 +397,10 @@ export class P2PNode {
         await this.node.dial(targetMultiaddr);
         console.log('[p2p] connected to peer via', target);
         await this.rememberPeerNodeInfo(nodeInfo, 'success');
+        const peerId = extractPeerId(nodeInfo);
+        if (peerId) {
+          void this.observePeerVersionByDirectProtocol(peerId);
+        }
         return;
       } catch (error) {
         lastError = error;

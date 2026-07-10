@@ -151,6 +151,59 @@ export type ElectronAPI = {
     sign: (payload: string) => Promise<{ rootId: string; signature: string; payloadHash: string }>;
     deriveDomain: (domain: string) => Promise<{ domain: string; domainId: string; publicKey: string; derivationPath: string }>;
   };
+  updater: {
+    status: () => Promise<{
+      configured: boolean;
+      appId: string;
+      channel: 'stable' | 'canary';
+      currentVersion: string;
+      highestAcceptedVersion: string;
+      latestCheck: {
+        checkedAt: number;
+        source: 'manual' | 'startup' | 'peer-observed';
+        currentVersion: string;
+        availableVersion: string | null;
+        updateAvailable: boolean;
+        critical: boolean;
+        revokedCurrentVersion: boolean;
+        reason: string;
+      } | null;
+      staged: {
+        version: string;
+        filePath: string;
+        fileName: string;
+        sha256: string;
+        size: number;
+        stagedAt: number;
+      } | null;
+      peerObservations: Array<{
+        peerId: string;
+        observedVersion: string;
+        observedAt: number;
+        triggeredCheck: boolean;
+      }>;
+    }>;
+    check: () => Promise<{
+      checkedAt: number;
+      source: 'manual' | 'startup' | 'peer-observed';
+      currentVersion: string;
+      availableVersion: string | null;
+      updateAvailable: boolean;
+      critical: boolean;
+      revokedCurrentVersion: boolean;
+      reason: string;
+    }>;
+    stageLatest: () => Promise<{
+      version: string;
+      filePath: string;
+      fileName: string;
+      sha256: string;
+      size: number;
+      stagedAt: number;
+    }>;
+    applyRestart: () => Promise<{ success: boolean }>;
+    observePeerVersion: (version: string) => Promise<{ success: boolean }>;
+  };
   /**
    * 查询当前窗口的可信域身份（只读）
    * 域身份由主进程在创建窗口时绑定，渲染进程无法修改
@@ -207,6 +260,13 @@ const api = {
     lock: () => ipcRenderer.invoke('root-lock'),
     sign: (payload: string) => ipcRenderer.invoke('root-sign', payload),
     deriveDomain: (domain: string) => ipcRenderer.invoke('root-derive-domain', domain)
+  },
+  updater: {
+    status: () => ipcRenderer.invoke('update-status'),
+    check: () => ipcRenderer.invoke('update-check'),
+    stageLatest: () => ipcRenderer.invoke('update-stage-latest'),
+    applyRestart: () => ipcRenderer.invoke('update-apply-restart'),
+    observePeerVersion: (version: string) => ipcRenderer.invoke('update-observe-peer-version', version)
   },
   getDomain: () => ipcRenderer.invoke('get-current-domain')
 };
