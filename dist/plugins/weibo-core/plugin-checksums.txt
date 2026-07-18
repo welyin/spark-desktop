@@ -1,0 +1,2 @@
+bf43300ae6e5b2ea14aff3702627fdb001f0f97f0d5d1ada6f5c3dca82ae4d21  spark-plugin-weibo-core-0.1.0.spkg
+eac7415af3c6ec91163336e85c492b8f4c06b825298be8d5fbfb1e93f1f91e39  update-manifest.json

@@ -29,6 +29,16 @@
             <el-form-item label="组织名称">
               <el-input v-model="createForm.name" placeholder="例如：产品组" />
             </el-form-item>
+            <el-form-item label="基础插件">
+              <el-select v-model="createForm.basePluginDomain" placeholder="请选择组织基础插件" style="width: 100%">
+                <el-option
+                  v-for="plugin in foundationPlugins"
+                  :key="plugin.domain"
+                  :label="`${plugin.name} (${plugin.domain})`"
+                  :value="plugin.domain"
+                />
+              </el-select>
+            </el-form-item>
             <el-form-item label="组织描述">
               <el-input
                 v-model="createForm.description"
@@ -42,7 +52,7 @@
             </el-button>
           </el-form>
 
-          <p class="hint">创建人会自动成为该组织的管理员和首位成员。</p>
+          <p class="hint">创建人会自动成为该组织的管理员和首位成员。组织必须绑定一个基础插件。</p>
           <el-alert v-if="message" :title="message" type="info" :closable="false" show-icon />
         </el-card>
       </el-col>
@@ -66,7 +76,7 @@
                 shadow="hover"
                 class="org-item"
                 :class="{ active: selectedOrgId === organization.orgId }"
-                @click="selectedOrgId = organization.orgId"
+                @click="selectOrganization(organization)"
               >
                 <div class="org-item-top">
                   <strong>{{ organization.name }}</strong>
@@ -78,6 +88,7 @@
                 <div class="org-meta">
                   <span>{{ organization.memberCount }} 人</span>
                   <span>{{ organization.adminCount }} 管理员</span>
+                  <span>基础插件：{{ organization.basePluginDomain || '-' }}</span>
                 </div>
               </el-card>
             </div>
@@ -101,6 +112,7 @@
           <el-descriptions :column="2" border>
             <el-descriptions-item label="组织 ID">{{ selectedOrganization.orgId }}</el-descriptions-item>
             <el-descriptions-item label="创建者">{{ selectedOrganization.createdBy }}</el-descriptions-item>
+            <el-descriptions-item label="基础插件">{{ selectedOrganization.basePluginDomain || '-' }}</el-descriptions-item>
             <el-descriptions-item label="成员数">{{ selectedOrganization.memberCount }}</el-descriptions-item>
             <el-descriptions-item label="管理员数">{{ selectedOrganization.adminCount }}</el-descriptions-item>
           </el-descriptions>
@@ -204,6 +216,7 @@ type OrganizationView = {
   orgId: string;
   name: string;
   description: string;
+  basePluginDomain?: string;
   createdAt: number;
   createdBy: string;
   updatedAt: number;
@@ -217,26 +230,61 @@ type OrganizationView = {
 type CreateForm = {
   name: string;
   description: string;
+  basePluginDomain: string;
+};
+
+type PluginCatalogItem = {
+  id: string;
+  domain: string;
+  name: string;
+  description: string;
+  category: 'foundation' | 'business';
+  version: string;
+  views: string[];
 };
 
 export default defineComponent({
   name: 'OrgPage',
-  setup() {
+  emits: ['open-plugin-tab'],
+  setup(_, { emit }) {
     const organizations = ref<OrganizationView[]>([]);
     const selectedOrgId = ref('');
     const loading = ref(false);
     const creating = ref(false);
     const busyAction = ref<'add' | 'remove' | 'delete' | ''>('');
     const message = ref('');
+    const pluginCatalog = ref<PluginCatalogItem[]>([]);
     const addMemberRootId = ref('');
     const addMemberPeerId = ref('');
     const addMemberAddresses = ref('');
     const removeMemberRootId = ref('');
-    const createForm = ref<CreateForm>({ name: '', description: '' });
+    const createForm = ref<CreateForm>({ name: '', description: '', basePluginDomain: '' });
+
+    const foundationPlugins = computed(() => {
+      return pluginCatalog.value.filter((plugin) => plugin.category === 'foundation');
+    });
 
     const selectedOrganization = computed(() => {
       return organizations.value.find((organization) => organization.orgId === selectedOrgId.value) ?? null;
     });
+    const selectOrganization = (organization: OrganizationView) => {
+      selectedOrgId.value = organization.orgId;
+
+      if (!organization.basePluginDomain) {
+        return;
+      }
+
+      emit('open-plugin-tab', {
+        pluginDomain: organization.basePluginDomain,
+        pluginView: 'default',
+        title: `${organization.name} · 插件`,
+        icon: '基',
+        pluginContext: {
+          orgId: organization.orgId
+        }
+      });
+    };
+
 
     const adminOrgCount = computed(() => {
       return organizations.value.filter((organization) => organization.isCurrentUserAdmin).length;
@@ -258,9 +306,26 @@ export default defineComponent({
       }
     };
 
+    const loadPluginCatalog = async () => {
+      try {
+        pluginCatalog.value = await window.electronAPI.plugin.listCatalog();
+        if (!createForm.value.basePluginDomain) {
+          createForm.value.basePluginDomain = foundationPlugins.value[0]?.domain ?? '';
+        }
+      } catch (error) {
+        message.value = `加载插件目录失败：${error}`;
+      }
+    };
+
     const createOrganization = async () => {
       if (!createForm.value.name.trim()) {
         message.value = '请输入组织名称';
+        ElMessage.warning(message.value);
+        return;
+      }
+
+      if (!createForm.value.basePluginDomain) {
+        message.value = '请选择基础插件';
         ElMessage.warning(message.value);
         return;
       }
@@ -270,11 +335,16 @@ export default defineComponent({
       try {
         const created = await window.electronAPI.organization.create({
           name: createForm.value.name,
-          description: createForm.value.description
+          description: createForm.value.description,
+          basePluginDomain: createForm.value.basePluginDomain
         });
         message.value = `组织已创建：${created.name}`;
         ElMessage.success(message.value);
-        createForm.value = { name: '', description: '' };
+        createForm.value = {
+          name: '',
+          description: '',
+          basePluginDomain: createForm.value.basePluginDomain
+        };
         await refreshOrganizations();
         selectedOrgId.value = created.orgId;
       } catch (error) {
@@ -397,6 +467,7 @@ export default defineComponent({
     };
 
     onMounted(() => {
+      void loadPluginCatalog();
       void refreshOrganizations();
     });
 
@@ -408,12 +479,14 @@ export default defineComponent({
       creating,
       busyAction,
       message,
+      foundationPlugins,
       adminOrgCount,
       addMemberRootId,
       addMemberPeerId,
       addMemberAddresses,
       removeMemberRootId,
       createForm,
+      selectOrganization,
       refreshOrganizations,
       createOrganization,
       addMember,

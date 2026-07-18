@@ -1,11 +1,14 @@
 import { app, BrowserWindow, ipcMain, IpcMainInvokeEvent } from 'electron';
 import path from 'path';
 import { levelDB, ensureSystemDomainInitialized, parseDomainFromKey, verifyAccess, getEvidenceHeadHash, verifyEvidenceChain, getEvidenceHeight } from './db';
+import { getPluginCollection } from './db/plugin';
 import { initP2PNode, getP2PNode, isP2PInitialized } from './p2p/index';
 import { registerDomain, unregisterDomain, getDomain, isSystemDomain, isValidPluginDomain } from './domain-registry';
 import { OrganizationService } from './organization/index';
 import { rootIdentityManager } from './identity';
 import { initUpdaterService, getUpdaterService } from './updater';
+import { isKnownPluginDomain, listPluginCatalog } from './plugins/catalog';
+import { getPluginMarketService, initPluginMarketService } from './plugin-market';
 
 /**
  * 从 IPC 事件中获取可信的调用者域
@@ -34,6 +37,34 @@ function requireAccess(event: IpcMainInvokeEvent, targetDomain: string | null): 
     throw new Error('Access denied: unregistered caller domain');
   }
   verifyAccess(caller, targetDomain);
+}
+
+function requirePluginDomain(event: IpcMainInvokeEvent): string {
+  const caller = getCallerDomain(event);
+  if (!caller || !isValidPluginDomain(caller)) {
+    throw new Error('Access denied: plugin domain required');
+  }
+  return caller;
+}
+
+function resolvePluginDomainAccess(event: IpcMainInvokeEvent, requestedDomain?: string): string {
+  const caller = getCallerDomain(event);
+
+  if (caller && isValidPluginDomain(caller)) {
+    if (requestedDomain && requestedDomain !== caller) {
+      throw new Error('Access denied: plugin domain mismatch');
+    }
+    return caller;
+  }
+
+  if (isSystemDomain(caller ?? undefined)) {
+    if (!requestedDomain || !isValidPluginDomain(requestedDomain)) {
+      throw new Error('Access denied: valid plugin domain is required for system caller');
+    }
+    return requestedDomain;
+  }
+
+  throw new Error('Access denied: plugin domain required');
 }
 
 function registerInvokeHandler(channel: string, handler: Parameters<typeof ipcMain.handle>[1]): void {
@@ -92,6 +123,10 @@ const organizationService = new OrganizationService(levelDB, {
 });
 
 let coreServicesLastError: string | null = null;
+
+async function ensurePluginMarketStarted(): Promise<void> {
+  await initPluginMarketService();
+}
 
 async function ensureCoreServicesStarted(): Promise<void> {
   try {
@@ -225,6 +260,7 @@ function createWindow() {
 
 app.whenReady().then(() => {
   initUpdaterService();
+  void ensurePluginMarketStarted();
 
   // 关键身份 IPC 先行注册，避免启动阶段异步任务导致首屏请求无 handler。
   registerInvokeHandler('root-status', async (event) => {
@@ -302,9 +338,91 @@ app.whenReady().then(() => {
     return await organizationService.listMine();
   });
 
-  registerInvokeHandler('org-create', async (event, input: { name: string; description?: string }) => {
+  registerInvokeHandler('org-create', async (event, input: { name: string; description?: string; basePluginDomain: string }) => {
     requireSystemDomain(event);
+    if (!input?.basePluginDomain || !isKnownPluginDomain(input.basePluginDomain)) {
+      throw new Error('Organization must choose a valid base plugin');
+    }
     return await organizationService.createOrganization(input);
+  });
+
+  registerInvokeHandler('plugin-list-catalog', (event) => {
+    if (!getCallerDomain(event)) {
+      throw new Error('Access denied: unregistered caller');
+    }
+    return listPluginCatalog();
+  });
+
+  registerInvokeHandler('plugin-market-list', async (event) => {
+    requireSystemDomain(event);
+    await ensurePluginMarketStarted();
+    return getPluginMarketService().listMarket();
+  });
+
+  registerInvokeHandler('plugin-market-check-updates', async (event, pluginId?: string) => {
+    requireSystemDomain(event);
+    await ensurePluginMarketStarted();
+    return await getPluginMarketService().checkForUpdates(pluginId);
+  });
+
+  registerInvokeHandler('plugin-market-install', async (event, pluginId: string) => {
+    requireSystemDomain(event);
+    await ensurePluginMarketStarted();
+    return await getPluginMarketService().install(pluginId);
+  });
+
+  registerInvokeHandler('plugin-market-upgrade', async (event, pluginId: string) => {
+    requireSystemDomain(event);
+    await ensurePluginMarketStarted();
+    return await getPluginMarketService().upgrade(pluginId);
+  });
+
+  registerInvokeHandler('plugin-market-set-enabled', async (event, pluginId: string, enabled: boolean) => {
+    requireSystemDomain(event);
+    await ensurePluginMarketStarted();
+    return await getPluginMarketService().setEnabled(pluginId, enabled);
+  });
+
+  registerInvokeHandler('plugin-current-root', async (event) => {
+    if (!getCallerDomain(event)) {
+      throw new Error('Access denied: unregistered caller');
+    }
+    const status = await rootIdentityManager.getStatus();
+    return {
+      unlocked: status.unlocked,
+      rootId: status.unlocked ? status.rootId : null
+    };
+  });
+
+  registerInvokeHandler('plugin-org-list-mine', async (event, pluginDomain?: string) => {
+    resolvePluginDomainAccess(event, pluginDomain);
+    return await organizationService.listMine();
+  });
+
+  registerInvokeHandler('plugin-doc-get', async (event, collection: string, id: string, pluginDomain?: string) => {
+    const domain = resolvePluginDomainAccess(event, pluginDomain);
+    const coll = getPluginCollection(levelDB, domain, collection);
+    return await coll.get(id);
+  });
+
+  registerInvokeHandler('plugin-doc-put', async (event, collection: string, id: string, doc: Record<string, unknown>, pluginDomain?: string) => {
+    const domain = resolvePluginDomainAccess(event, pluginDomain);
+    const coll = getPluginCollection(levelDB, domain, collection);
+    await coll.put(id, doc);
+    return { success: true };
+  });
+
+  registerInvokeHandler('plugin-doc-delete', async (event, collection: string, id: string, pluginDomain?: string) => {
+    const domain = resolvePluginDomainAccess(event, pluginDomain);
+    const coll = getPluginCollection(levelDB, domain, collection);
+    await coll.delete(id);
+    return { success: true };
+  });
+
+  registerInvokeHandler('plugin-doc-query', async (event, collection: string, options: { limit?: number; reverse?: boolean; filter?: Array<{ field: string; value: string | number | boolean; op?: 'eq' | 'startsWith' | 'gt' | 'lt' | 'gte' | 'lte' }> } = {}, pluginDomain?: string) => {
+    const domain = resolvePluginDomainAccess(event, pluginDomain);
+    const coll = getPluginCollection(levelDB, domain, collection);
+    return await coll.query(options);
   });
 
   registerInvokeHandler('org-delete', async (event, orgId: string) => {

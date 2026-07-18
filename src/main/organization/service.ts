@@ -16,6 +16,19 @@ function normalizeText(value: string, label: string): string {
 	return normalized;
 }
 
+function normalizePluginDomain(value: string): string {
+	const normalized = value.trim();
+	if (!normalized) {
+		throw new Error('Base plugin is required');
+	}
+
+	if (!normalized.startsWith('plugin:') || normalized.length <= 'plugin:'.length) {
+		throw new Error('Invalid base plugin domain');
+	}
+
+	return normalized;
+}
+
 function normalizeRootId(rootId: string): string {
 	const normalized = rootId.trim().toLowerCase();
 	if (!/^[0-9a-f]{64}$/.test(normalized)) {
@@ -82,11 +95,13 @@ export class OrganizationService {
 		const currentRootId = await this.requireCurrentRootId();
 		const name = normalizeText(input.name, 'Organization name');
 		const description = input.description ? input.description.trim() : '';
+		const basePluginDomain = normalizePluginDomain(input.basePluginDomain);
 		const now = Date.now();
 		const record: OrganizationRecord = {
 			orgId: generateOrganizationId(),
 			name,
 			description,
+			basePluginDomain,
 			createdAt: now,
 			createdBy: currentRootId,
 			updatedAt: now,
@@ -104,7 +119,7 @@ export class OrganizationService {
 			type: 'create',
 			actorRootId: currentRootId,
 			summary: `创建组织 ${name}`,
-			payload: { name, description }
+			payload: { name, description, basePluginDomain }
 		});
 		record.sync = {
 			versions: buildOrganizationSyncVersions(record, transaction.createdAt),
@@ -320,6 +335,7 @@ export class OrganizationService {
 
 		return {
 			...record,
+			basePluginDomain: record.basePluginDomain ?? '',
 			members,
 			currentUserRole: currentMember?.role ?? null,
 			isCurrentUserAdmin: currentMember?.role === 'admin',

@@ -1,12 +1,6 @@
 <template>
   <section v-if="isPluginViewMode" class="plugin-host-wrap">
     <el-card shadow="never">
-      <template #header>
-        <div class="plugin-head">
-          <h1>插件独立视图</h1>
-          <el-tag type="info">{{ pluginWindowDomain }} / {{ pluginWindowView }}</el-tag>
-        </div>
-      </template>
       <el-alert v-if="pluginHostMessage" :title="pluginHostMessage" type="warning" :closable="false" show-icon />
       <component v-if="activePluginView" :is="activePluginView" />
     </el-card>
@@ -28,7 +22,7 @@
 
     <el-main class="main">
       <AffairsPage v-if="activeTab === 'affairs'" />
-      <OrgPage v-else-if="activeTab === 'org'" />
+      <OrgPage v-else-if="activeTab === 'org'" @open-plugin-tab="openPluginTab" />
       <AppsPage v-else-if="activeTab === 'apps'" @open-plugin-tab="openPluginTab" />
       <TestPage
         v-else-if="activeTab === 'test'"
@@ -44,20 +38,23 @@
       />
       <MinePage v-else-if="activeTab === 'mine'" />
 
-      <el-card v-else-if="activePluginTab" shadow="never">
+      <el-card v-else-if="activePluginTab" shadow="never" class="plugin-tab-card">
         <template #header>
-          <div class="plugin-tab-header">
-            <h1>{{ activePluginTab.title }}</h1>
-            <p>{{ activePluginTab.pluginDomain }} / {{ activePluginTab.pluginView }}</p>
+          <div class="plugin-tab-header-bar">
+            <div class="plugin-tab-header-left">
+              <el-button text type="primary" @click="goBackFromPlugin">&lt; 返回</el-button>
+            </div>
+            <div class="plugin-tab-header-center">
+              <h1>{{ activePluginTab.title }}</h1>
+              <p>{{ activePluginTab.pluginDomain }} / {{ activePluginTab.pluginView }}</p>
+            </div>
+            <div class="plugin-tab-header-right" />
           </div>
         </template>
-        <component v-if="activePluginComponent" :is="activePluginComponent" />
-        <el-alert
-          v-else
-          :title="`未找到插件视图：${activePluginTab.pluginDomain} / ${activePluginTab.pluginView}`"
-          type="warning"
-          :closable="false"
-          show-icon
+        <iframe
+          class="plugin-frame"
+          :src="pluginFrameSrc"
+          :title="`${activePluginTab.pluginDomain}/${activePluginTab.pluginView}`"
         />
       </el-card>
     </el-main>
@@ -90,6 +87,10 @@ type PluginTab = {
   pluginView: string;
   title: string;
   icon: string;
+  sourceTab?: string;
+  pluginContext?: {
+    orgId?: string;
+  };
 };
 
 export default defineComponent({
@@ -121,11 +122,20 @@ export default defineComponent({
       return pluginTabs.value.find((tab) => tab.id === activeTab.value) ?? null;
     });
 
-    const activePluginComponent = computed<Component | null>(() => {
-      if (!activePluginTab.value) {
-        return null;
+    const pluginFrameSrc = computed(() => {
+      const tab = activePluginTab.value;
+      if (!tab) {
+        return '';
       }
-      return getPluginView(activePluginTab.value.pluginDomain, activePluginTab.value.pluginView);
+
+      const url = new URL(window.location.href);
+      url.search = '';
+      url.searchParams.set('pluginDomain', tab.pluginDomain);
+      url.searchParams.set('pluginView', tab.pluginView);
+      if (tab.pluginContext?.orgId) {
+        url.searchParams.set('orgId', tab.pluginContext.orgId);
+      }
+      return url.toString();
     });
 
     const handleMenuSelect = (index: string) => {
@@ -140,18 +150,30 @@ export default defineComponent({
         return;
       }
 
-      const tabId = `plugin|${pluginDomain}|${pluginView}`;
+      const pluginContext = payload.pluginContext;
+      const contextSuffix = pluginContext?.orgId ? `|${pluginContext.orgId}` : '';
+
+      const tabId = `plugin|${pluginDomain}|${pluginView}${contextSuffix}`;
       const existing = pluginTabs.value.find((item) => item.id === tabId);
       if (!existing) {
+        const sourceTab = activeTab.value.startsWith('plugin|') ? 'org' : activeTab.value;
         pluginTabs.value.push({
           id: tabId,
           pluginDomain,
           pluginView,
           title: payload.title || `${pluginDomain}/${pluginView}`,
-          icon: payload.icon || 'P'
+          icon: payload.icon || 'P',
+          sourceTab,
+          pluginContext
         });
       }
       activeTab.value = tabId;
+    };
+
+    const goBackFromPlugin = () => {
+      const tab = activePluginTab.value;
+      const fallback = 'org';
+      activeTab.value = tab?.sourceTab ?? fallback;
     };
 
     const updateStatus = async () => {
@@ -248,7 +270,7 @@ export default defineComponent({
       activeTab,
       pluginTabs,
       activePluginTab,
-      activePluginComponent,
+      pluginFrameSrc,
       dbStatus,
       dbPath,
       resultMessage,
@@ -259,7 +281,8 @@ export default defineComponent({
       getValue,
       delValue,
       batchOps,
-      openPluginTab
+      openPluginTab,
+      goBackFromPlugin
     };
   }
 });
@@ -301,18 +324,15 @@ body {
   margin-left: 210px;
   min-height: 100vh;
   box-sizing: border-box;
-  padding: 20px;
+  padding: 0;
 }
 
-.plugin-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+.el-main {
+  padding: 0 !important;
 }
 
 .plugin-host-wrap {
-  padding: 16px;
+  padding: 0;
 }
 
 .plugin-tab-header h1 {
@@ -322,6 +342,59 @@ body {
 .plugin-tab-header p {
   margin: 8px 0 0;
   color: #64748b;
+}
+
+.plugin-tab-card {
+  height: calc(100vh - 40px);
+  display: flex;
+  flex-direction: column;
+}
+
+.plugin-tab-card .el-card__header {
+  flex-shrink: 0;
+}
+
+.plugin-tab-card .el-card__body {
+  flex: 1;
+  padding: 0;
+  min-height: 0;
+}
+
+.plugin-tab-header-bar {
+  display: grid;
+  grid-template-columns: 120px 1fr 120px;
+  align-items: center;
+}
+
+.plugin-tab-header-left {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.plugin-tab-header-center {
+  text-align: center;
+}
+
+.plugin-tab-header-center h1 {
+  margin: 0;
+}
+
+.plugin-tab-header-center p {
+  margin: 8px 0 0;
+  color: #64748b;
+}
+
+.plugin-tab-header-right {
+  min-height: 1px;
+}
+
+.plugin-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 10px;
+  background: #fff;
+  display: block;
 }
 
 @media (max-width: 900px) {

@@ -34,7 +34,11 @@ describe('OrganizationService', () => {
 			getCurrentRootId: async () => rootId
 		});
 
-		const created = await service.createOrganization({ name: '  Alpha Org  ', description: 'Demo org' });
+		const created = await service.createOrganization({
+			name: '  Alpha Org  ',
+			description: 'Demo org',
+			basePluginDomain: 'plugin:weibo-core'
+		});
 		expect(created.name).toBe('Alpha Org');
 		expect(created.description).toBe('Demo org');
 		expect(created.memberCount).toBe(1);
@@ -59,7 +63,7 @@ describe('OrganizationService', () => {
 			}
 		});
 
-		const created = await service.createOrganization({ name: 'Team One' });
+		const created = await service.createOrganization({ name: 'Team One', basePluginDomain: 'plugin:weibo-core' });
 		const memberRootId = 'c'.repeat(64);
 		await service.addMember(created.orgId, {
 			rootId: memberRootId,
@@ -97,7 +101,7 @@ describe('OrganizationService', () => {
 			getCurrentRootId: async () => rootId
 		});
 
-		const created = await service.createOrganization({ name: 'Guarded Org' });
+		const created = await service.createOrganization({ name: 'Guarded Org', basePluginDomain: 'plugin:weibo-core' });
 		await expect(service.removeMember(created.orgId, rootId)).rejects.toThrow(/at least one admin/i);
 	});
 
@@ -108,7 +112,10 @@ describe('OrganizationService', () => {
 			getCurrentRootId: async () => rootId
 		});
 
-		const created = await serviceWithoutSync.createOrganization({ name: 'Sync Required Org' });
+		const created = await serviceWithoutSync.createOrganization({
+			name: 'Sync Required Org',
+			basePluginDomain: 'plugin:weibo-core'
+		});
 		await expect(
 			serviceWithoutSync.addMember(created.orgId, {
 				rootId: '1'.repeat(64),
@@ -128,5 +135,27 @@ describe('OrganizationService', () => {
 				nodeInfo: { peerId: '', addresses: [] }
 			})
 		).rejects.toThrow(/node info/i);
+	});
+
+	it('requires valid base plugin domain when creating organization', async () => {
+		const db = new MemoryDb();
+		const rootId = '9'.repeat(64);
+		const service = new OrganizationService(db, {
+			getCurrentRootId: async () => rootId
+		});
+
+		await expect(
+			service.createOrganization({
+				name: 'Invalid Plugin Org',
+				basePluginDomain: ''
+			})
+		).rejects.toThrow(/base plugin/i);
+
+		await expect(
+			service.createOrganization({
+				name: 'Invalid Plugin Org',
+				basePluginDomain: 'weibo-core'
+			})
+		).rejects.toThrow(/plugin domain/i);
 	});
 });

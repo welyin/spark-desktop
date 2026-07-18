@@ -51,12 +51,27 @@ export type ElectronAPI = {
   };
   plugin: {
     openView: (pluginDomain: string, pluginView?: string) => Promise<{ success: boolean; windowId: number }>;
-  };
-  organization: {
-    listMine: () => Promise<Array<{
+    listCatalog: () => Promise<Array<{
+      id: string;
+      domain: string;
+      name: string;
+      description: string;
+      category: 'foundation' | 'business';
+      version: string;
+      views: string[];
+      package: {
+        updateManifestUrl: string;
+        signatureUrl: string;
+        packageName: string;
+        installCommand: string;
+      };
+    }>>;
+    currentRoot: () => Promise<{ unlocked: boolean; rootId: string | null }>;
+    listMineOrganizations: (pluginDomain?: string) => Promise<Array<{
       orgId: string;
       name: string;
       description: string;
+      basePluginDomain?: string;
       createdAt: number;
       createdBy: string;
       updatedAt: number;
@@ -75,10 +90,113 @@ export type ElectronAPI = {
       memberCount: number;
       adminCount: number;
     }>>;
-    create: (input: { name: string; description?: string }) => Promise<{
+    docGet: <T extends Record<string, unknown> = Record<string, unknown>>(collection: string, id: string, pluginDomain?: string) => Promise<T | null>;
+    docPut: (collection: string, id: string, doc: Record<string, unknown>, pluginDomain?: string) => Promise<{ success: boolean }>;
+    docDelete: (collection: string, id: string, pluginDomain?: string) => Promise<{ success: boolean }>;
+    docQuery: <T extends Record<string, unknown> = Record<string, unknown>>(
+      collection: string,
+      options?: {
+        limit?: number;
+        reverse?: boolean;
+        filter?: Array<{
+          field: string;
+          value: string | number | boolean;
+          op?: 'eq' | 'startsWith' | 'gt' | 'lt' | 'gte' | 'lte';
+        }>;
+      },
+      pluginDomain?: string
+    ) => Promise<{
+      items: Array<{ id: string; data: T }>;
+      nextCursor?: string;
+    }>;
+  };
+  pluginMarket: {
+    list: () => Promise<Array<{
+      id: string;
+      domain: string;
+      name: string;
+      description: string;
+      category: 'foundation' | 'business';
+      version: string;
+      views: string[];
+      package: {
+        updateManifestUrl: string;
+        signatureUrl: string;
+        packageName: string;
+        installCommand: string;
+      };
+      installed: boolean;
+      enabled: boolean;
+      installedVersion: string | null;
+      latestVersion: string | null;
+      updateAvailable: boolean;
+      lastCheckedAt: number | null;
+      lastCheckReason: string;
+    }>>;
+    checkUpdates: (pluginId?: string) => Promise<Array<{
+      pluginId: string;
+      checkedAt: number;
+      latestVersion: string | null;
+      updateAvailable: boolean;
+      reason: string;
+    }>>;
+    install: (pluginId: string) => Promise<{
+      pluginId: string;
+      version: string;
+      packagePath: string;
+      sha256: string;
+      size: number;
+      installedAt: number;
+      enabled: boolean;
+    }>;
+    upgrade: (pluginId: string) => Promise<{
+      pluginId: string;
+      version: string;
+      packagePath: string;
+      sha256: string;
+      size: number;
+      installedAt: number;
+      enabled: boolean;
+    }>;
+    setEnabled: (pluginId: string, enabled: boolean) => Promise<{
+      pluginId: string;
+      version: string;
+      packagePath: string;
+      sha256: string;
+      size: number;
+      installedAt: number;
+      enabled: boolean;
+    }>;
+  };
+  organization: {
+    listMine: () => Promise<Array<{
       orgId: string;
       name: string;
       description: string;
+      basePluginDomain?: string;
+      createdAt: number;
+      createdBy: string;
+      updatedAt: number;
+      members: Array<{
+        rootId: string;
+        role: 'admin' | 'member';
+        joinedAt: number;
+        addedBy: string;
+        nodeInfo?: {
+          peerId?: string;
+          addresses: string[];
+        };
+      }>;
+      currentUserRole: 'admin' | 'member' | null;
+      isCurrentUserAdmin: boolean;
+      memberCount: number;
+      adminCount: number;
+    }>>;
+    create: (input: { name: string; description?: string; basePluginDomain: string }) => Promise<{
+      orgId: string;
+      name: string;
+      description: string;
+      basePluginDomain?: string;
       createdAt: number;
       createdBy: string;
       updatedAt: number;
@@ -102,6 +220,7 @@ export type ElectronAPI = {
       orgId: string;
       name: string;
       description: string;
+      basePluginDomain?: string;
       createdAt: number;
       createdBy: string;
       updatedAt: number;
@@ -124,6 +243,7 @@ export type ElectronAPI = {
       orgId: string;
       name: string;
       description: string;
+      basePluginDomain?: string;
       createdAt: number;
       createdBy: string;
       updatedAt: number;
@@ -244,11 +364,29 @@ const api = {
   },
   plugin: {
     openView: (pluginDomain: string, pluginView = 'default') =>
-      ipcRenderer.invoke('plugin-open-view', pluginDomain, pluginView)
+      ipcRenderer.invoke('plugin-open-view', pluginDomain, pluginView),
+    listCatalog: () => ipcRenderer.invoke('plugin-list-catalog'),
+    currentRoot: () => ipcRenderer.invoke('plugin-current-root'),
+    listMineOrganizations: (pluginDomain?: string) => ipcRenderer.invoke('plugin-org-list-mine', pluginDomain),
+    docGet: (collection: string, id: string, pluginDomain?: string) => ipcRenderer.invoke('plugin-doc-get', collection, id, pluginDomain),
+    docPut: (collection: string, id: string, doc: Record<string, unknown>, pluginDomain?: string) =>
+      ipcRenderer.invoke('plugin-doc-put', collection, id, doc, pluginDomain),
+    docDelete: (collection: string, id: string, pluginDomain?: string) =>
+      ipcRenderer.invoke('plugin-doc-delete', collection, id, pluginDomain),
+    docQuery: (collection: string, options = {}, pluginDomain?: string) =>
+      ipcRenderer.invoke('plugin-doc-query', collection, options, pluginDomain)
+  },
+  pluginMarket: {
+    list: () => ipcRenderer.invoke('plugin-market-list'),
+    checkUpdates: (pluginId?: string) => ipcRenderer.invoke('plugin-market-check-updates', pluginId),
+    install: (pluginId: string) => ipcRenderer.invoke('plugin-market-install', pluginId),
+    upgrade: (pluginId: string) => ipcRenderer.invoke('plugin-market-upgrade', pluginId),
+    setEnabled: (pluginId: string, enabled: boolean) =>
+      ipcRenderer.invoke('plugin-market-set-enabled', pluginId, enabled)
   },
   organization: {
     listMine: () => ipcRenderer.invoke('org-list-mine'),
-    create: (input: { name: string; description?: string }) => ipcRenderer.invoke('org-create', input),
+    create: (input: { name: string; description?: string; basePluginDomain: string }) => ipcRenderer.invoke('org-create', input),
     delete: (orgId: string) => ipcRenderer.invoke('org-delete', orgId),
     addMember: (orgId: string, input: { rootId: string; nodeInfo: { peerId?: string; addresses: string[] } }) => ipcRenderer.invoke('org-add-member', orgId, input),
     removeMember: (orgId: string, memberRootId: string) => ipcRenderer.invoke('org-remove-member', orgId, memberRootId)

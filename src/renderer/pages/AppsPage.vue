@@ -1,93 +1,251 @@
 <template>
   <section class="card-page">
-    <h1>应用</h1>
-    <p>打开插件页面会在左侧新增一个 tab，并显示插件图标。</p>
+    <div class="header">
+      <div>
+        <h1>插件市场</h1>
+        <p>支持安装、升级、启停，并可筛选基础插件作为组织创建基座。</p>
+      </div>
+      <div class="header-actions">
+        <el-switch v-model="foundationOnly" active-text="仅看基础插件" />
+        <el-button :loading="busyGlobal" @click="refreshMarket">刷新市场</el-button>
+        <el-button type="primary" :loading="busyGlobal" @click="checkAllUpdates">检查全部更新</el-button>
+      </div>
+    </div>
 
-    <el-card class="nested">
-      <template #header>
-        <h2>插件 Tab 管理</h2>
-      </template>
+    <el-alert v-if="message" :title="message" type="info" :closable="false" show-icon />
 
-      <el-form label-position="top">
-        <el-row :gutter="12">
-          <el-col :xs="24" :sm="12">
-            <el-form-item label="插件域">
-              <el-input v-model="domain" placeholder="plugin:demo" />
-            </el-form-item>
-          </el-col>
-          <el-col :xs="24" :sm="12">
-            <el-form-item label="视图 ID">
-              <el-input v-model="view" placeholder="default" />
-            </el-form-item>
-          </el-col>
-        </el-row>
+    <el-row :gutter="12" class="market-grid">
+      <el-col v-for="item in filteredItems" :key="item.id" :xs="24" :sm="12" :lg="8">
+        <el-card shadow="never" class="plugin-card">
+          <template #header>
+            <div class="plugin-head">
+              <div>
+                <h3>{{ item.name }}</h3>
+                <p>{{ item.domain }}</p>
+              </div>
+              <el-tag :type="item.category === 'foundation' ? 'danger' : 'info'">
+                {{ item.category === 'foundation' ? '基础插件' : '业务插件' }}
+              </el-tag>
+            </div>
+          </template>
 
-        <el-row :gutter="12">
-          <el-col :xs="24" :sm="12">
-            <el-form-item label="标签标题">
-              <el-input v-model="title" placeholder="Demo 插件" />
-            </el-form-item>
-          </el-col>
-          <el-col :xs="24" :sm="12">
-            <el-form-item label="图标文字">
-              <el-input v-model="icon" maxlength="2" placeholder="D" />
-            </el-form-item>
-          </el-col>
-        </el-row>
+          <p class="desc">{{ item.description }}</p>
 
-        <el-form-item>
-          <el-button type="primary" @click="openPluginTab">打开插件 Tab</el-button>
-        </el-form-item>
-      </el-form>
+          <div class="meta">
+            <span>内置版本：{{ item.version }}</span>
+            <span>已装版本：{{ item.installedVersion || '-' }}</span>
+            <span>最新版本：{{ item.latestVersion || '-' }}</span>
+          </div>
 
-      <el-alert :title="`状态：${message}`" type="info" :closable="false" show-icon />
-    </el-card>
+          <div class="state-row">
+            <el-tag :type="item.installed ? 'success' : 'warning'">{{ item.installed ? '已安装' : '未安装' }}</el-tag>
+            <el-tag v-if="item.updateAvailable" type="danger">可升级</el-tag>
+            <el-tag v-if="item.installed && !item.enabled" type="warning">已停用</el-tag>
+          </div>
+
+          <div class="actions">
+            <el-button
+              type="primary"
+              size="small"
+              :loading="busyByPlugin[item.id] === 'install'"
+              :disabled="item.installed"
+              @click="installPlugin(item.id)"
+            >
+              一键安装
+            </el-button>
+            <el-button
+              type="warning"
+              size="small"
+              :loading="busyByPlugin[item.id] === 'upgrade'"
+              :disabled="!item.installed || !item.updateAvailable"
+              @click="upgradePlugin(item.id)"
+            >
+              升级
+            </el-button>
+            <el-button
+              size="small"
+              :loading="busyByPlugin[item.id] === 'toggle'"
+              :disabled="!item.installed"
+              @click="toggleEnabled(item)"
+            >
+              {{ item.enabled ? '停用' : '启用' }}
+            </el-button>
+            <el-button
+              size="small"
+              :disabled="!item.installed || !item.enabled"
+              @click="openInstalledPlugin(item)"
+            >
+              打开
+            </el-button>
+            <el-button
+              size="small"
+              :loading="busyByPlugin[item.id] === 'check'"
+              @click="checkOneUpdate(item.id)"
+            >
+              检查更新
+            </el-button>
+          </div>
+
+          <p class="reason">{{ item.lastCheckReason }}</p>
+        </el-card>
+      </el-col>
+    </el-row>
   </section>
 </template>
 
 <script lang="ts">
-import { defineComponent, ref } from 'vue';
+import { computed, defineComponent, onMounted, ref } from 'vue';
+import { ElMessage } from 'element-plus';
 
 export type OpenPluginTabPayload = {
   pluginDomain: string;
   pluginView: string;
   title: string;
   icon: string;
+  pluginContext?: {
+    orgId?: string;
+  };
 };
 
 export default defineComponent({
   name: 'AppsPage',
   emits: ['open-plugin-tab'],
   setup(_, { emit }) {
-    const domain = ref('plugin:demo');
-    const view = ref('default');
-    const title = ref('Demo 插件');
-    const icon = ref('D');
-    const message = ref('等待打开插件 Tab');
+    const items = ref<Array<{
+      id: string;
+      domain: string;
+      name: string;
+      description: string;
+      category: 'foundation' | 'business';
+      version: string;
+      views: string[];
+      installed: boolean;
+      enabled: boolean;
+      installedVersion: string | null;
+      latestVersion: string | null;
+      updateAvailable: boolean;
+      lastCheckedAt: number | null;
+      lastCheckReason: string;
+    }>>([]);
+    const message = ref('');
+    const foundationOnly = ref(false);
+    const busyGlobal = ref(false);
+    const busyByPlugin = ref<Record<string, '' | 'install' | 'upgrade' | 'toggle' | 'check'>>({});
 
-    const openPluginTab = () => {
-      const pluginDomain = domain.value.trim();
-      const pluginView = view.value.trim() || 'default';
-      const tabTitle = title.value.trim() || `${pluginDomain}/${pluginView}`;
-      const tabIcon = icon.value.trim() || tabTitle.slice(0, 1).toUpperCase();
+    const filteredItems = computed(() => {
+      if (!foundationOnly.value) {
+        return items.value;
+      }
+      return items.value.filter((item) => item.category === 'foundation');
+    });
 
-      emit('open-plugin-tab', {
-        pluginDomain,
-        pluginView,
-        title: tabTitle,
-        icon: tabIcon
-      } as OpenPluginTabPayload);
-
-      message.value = `已请求打开插件 Tab：${tabTitle}`;
+    const setPluginBusy = (pluginId: string, action: '' | 'install' | 'upgrade' | 'toggle' | 'check') => {
+      busyByPlugin.value = {
+        ...busyByPlugin.value,
+        [pluginId]: action
+      };
     };
 
+    const refreshMarket = async () => {
+      busyGlobal.value = true;
+      try {
+        items.value = await window.electronAPI.pluginMarket.list();
+      } catch (error) {
+        message.value = `加载插件市场失败：${error}`;
+      } finally {
+        busyGlobal.value = false;
+      }
+    };
+
+    const checkAllUpdates = async () => {
+      busyGlobal.value = true;
+      try {
+        await window.electronAPI.pluginMarket.checkUpdates();
+        await refreshMarket();
+        ElMessage.success('更新检查完成');
+      } catch (error) {
+        message.value = `检查更新失败：${error}`;
+      } finally {
+        busyGlobal.value = false;
+      }
+    };
+
+    const checkOneUpdate = async (pluginId: string) => {
+      setPluginBusy(pluginId, 'check');
+      try {
+        await window.electronAPI.pluginMarket.checkUpdates(pluginId);
+        await refreshMarket();
+      } catch (error) {
+        message.value = `检查更新失败：${error}`;
+      } finally {
+        setPluginBusy(pluginId, '');
+      }
+    };
+
+    const installPlugin = async (pluginId: string) => {
+      setPluginBusy(pluginId, 'install');
+      try {
+        await window.electronAPI.pluginMarket.install(pluginId);
+        await refreshMarket();
+        ElMessage.success('插件安装成功');
+      } catch (error) {
+        message.value = `插件安装失败：${error}`;
+      } finally {
+        setPluginBusy(pluginId, '');
+      }
+    };
+
+    const upgradePlugin = async (pluginId: string) => {
+      setPluginBusy(pluginId, 'upgrade');
+      try {
+        await window.electronAPI.pluginMarket.upgrade(pluginId);
+        await refreshMarket();
+        ElMessage.success('插件升级成功');
+      } catch (error) {
+        message.value = `插件升级失败：${error}`;
+      } finally {
+        setPluginBusy(pluginId, '');
+      }
+    };
+
+    const toggleEnabled = async (item: { id: string; enabled: boolean }) => {
+      setPluginBusy(item.id, 'toggle');
+      try {
+        await window.electronAPI.pluginMarket.setEnabled(item.id, !item.enabled);
+        await refreshMarket();
+      } catch (error) {
+        message.value = `插件启停失败：${error}`;
+      } finally {
+        setPluginBusy(item.id, '');
+      }
+    };
+
+    const openInstalledPlugin = (item: { domain: string; name: string }) => {
+      emit('open-plugin-tab', {
+        pluginDomain: item.domain,
+        pluginView: 'default',
+        title: item.name,
+        icon: item.name.slice(0, 1)
+      } as OpenPluginTabPayload);
+    };
+
+    onMounted(() => {
+      void refreshMarket();
+    });
+
     return {
-      domain,
-      view,
-      title,
-      icon,
       message,
-      openPluginTab
+      foundationOnly,
+      busyGlobal,
+      busyByPlugin,
+      filteredItems,
+      refreshMarket,
+      checkAllUpdates,
+      checkOneUpdate,
+      installPlugin,
+      upgradePlugin,
+      toggleEnabled,
+      openInstalledPlugin
     };
   }
 });
@@ -98,7 +256,83 @@ export default defineComponent({
   padding: 16px;
 }
 
-.nested {
-  margin-top: 16px;
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.header-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.market-grid {
+  margin-top: 14px;
+}
+
+.plugin-card {
+  min-height: 290px;
+  margin-bottom: 12px;
+}
+
+.plugin-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.plugin-head h3 {
+  margin: 0;
+}
+
+.plugin-head p {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.desc {
+  color: #475569;
+  min-height: 40px;
+}
+
+.meta {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.state-row {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+}
+
+.actions {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.reason {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: #64748b;
+}
+
+@media (max-width: 900px) {
+  .header {
+    flex-direction: column;
+  }
+
+  .header-actions {
+    flex-wrap: wrap;
+  }
 }
 </style>

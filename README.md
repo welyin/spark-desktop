@@ -117,6 +117,106 @@ npm run build:all
 * 骨架向插件开放标准化 API：数据读写、社区广播、身份校验、UI 界面注入
 * 详细开发规范请参考 [插件开发文档](./docs/plugin-dev.md)
 
+### 组织基础插件约束（新增）
+
+* 新建组织时，必须选择一个基础插件（当前内置 `plugin:weibo-core`）。
+* 基础插件会写入组织元数据 `basePluginDomain`，组织内业务插件可据此决定是否启用。
+* 该约束由主进程强制校验，前端仅负责交互选择。
+
+### 微博基础插件（plugin:weibo-core）
+
+已内置一个“微博式”基础插件用于验证插件独立性与 P2P 同步：
+
+* 组织首次使用插件时，插件自动记录主管理员（组织创建者默认主管理员）。
+* 仅主管理员可发布 260 字以内短文。
+* 组织内所有成员（包含管理员）均可评论、回复，评论/回复同样限制 260 字。
+* 所有插件业务数据落在插件域独立集合，通过插件 SDK 的文档 API 读写，并走既有 P2P 广播同步链路。
+
+### 插件独立打包/更新（骨架）
+
+提供独立打包脚本：
+
+```bash
+npm run plugin:package:weibo
+```
+
+输出目录：`dist/plugins/weibo-core/`
+
+* `update-manifest.json`：插件更新清单（版本、文件、sha256、size）
+* 插件源码产物副本（用于后续接入插件安装器与远程分发）
+
+该机制用于后续演进插件“独立安装、独立更新”，与主程序更新链路解耦。
+
+### GitHub Actions 并行发布（主程序 + 插件）
+
+当前仓库已支持两条并行发布工作流：
+
+* 主程序更新清单：`.github/workflows/release-updater-manifest.yml`
+* 插件更新清单：`.github/workflows/release-plugin-weibo.yml`
+
+插件工作流会在 Release 发布时自动执行：
+
+1. 构建插件包 `spark-plugin-weibo-core-<version>.spkg`
+2. 生成 `spark-plugin-weibo-core-manifest.json`
+3. 生成 detached 签名 `spark-plugin-weibo-core-manifest.sig`
+4. 上传包、manifest、sig、pub key、checksums 到同一个 GitHub Release
+
+插件工作流所需仓库 Secret：
+
+* `SPARK_PLUGIN_SIGNING_PRIVATE_KEY`：插件 manifest 签名私钥（Ed25519）
+
+客户端校验公钥配置：
+
+* `SPARK_PLUGIN_UPDATE_PUBLIC_KEY_PEM`：插件更新校验公钥（支持 `@@` 多 key）
+
+## 插件市场与独立更新链路（新增）
+
+### 插件市场（Apps 页面）
+
+Apps 页面已升级为“插件市场”视图，支持：
+
+* 一键安装
+* 检查更新（单插件/全量）
+* 升级
+* 启用/停用
+* 基础插件筛选（用于组织基座插件选择）
+
+### 安装器与更新签名校验
+
+主进程新增插件市场服务（PluginMarketService），对齐主程序 updater 的信任模型：
+
+* 拉取插件 `update-manifest.json` 与 `update-manifest.sig`
+* 使用 Ed25519 公钥校验 detached signature
+* 下载插件包并校验 SHA-256 与 size
+* 持久化插件安装状态（版本、启停状态、包路径）
+
+默认使用 `SPARK_PLUGIN_UPDATE_PUBLIC_KEY_PEM`（支持多 key，以 `@@` 分隔），未设置时回退内置公钥。
+
+### 本地打包签名命令
+
+```bash
+npm run plugin:package:weibo
+```
+
+会产出：
+
+* `dist/plugins/weibo-core/spark-plugin-weibo-core-0.1.0.spkg`
+* `dist/plugins/weibo-core/update-manifest.json`
+* `dist/plugins/weibo-core/update-manifest.sig`
+
+签名私钥来源：
+
+* 环境变量 `SPARK_PLUGIN_SIGNING_PRIVATE_KEY`
+* 或本地文件 `.secrets/spark-update-signing-private-key.pem`
+
+## 微博插件自动化测试（新增）
+
+已增加自动化测试覆盖：
+
+* 权限：仅主管理员可发帖
+* 文本约束：260 字上限
+* 评论回复结构：根评论 + 回复结构构建
+* 同步回归：按 `orgId` 维度查询，确保跨端同步作用域稳定
 ## 主程序热更新（GitHub 发布中心）
 
 当前已接入第一阶段更新链路：

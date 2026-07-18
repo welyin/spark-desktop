@@ -1,6 +1,18 @@
 import type { IpcRenderer } from 'electron';
 import type { DBStatus, LevelDBOperation } from './preload';
 
+export type PluginQueryFilter = {
+  field: string;
+  value: string | number | boolean;
+  op?: 'eq' | 'startsWith' | 'gt' | 'lt' | 'gte' | 'lte';
+};
+
+export type PluginDocQueryOptions = {
+  limit?: number;
+  reverse?: boolean;
+  filter?: PluginQueryFilter[];
+};
+
 export interface PluginDBAPI {
   open: () => Promise<{ path: string; open: boolean }>;
   close: () => Promise<{ open: boolean }>;
@@ -24,12 +36,51 @@ export interface PluginP2PAPI {
   broadcast: (topic: string, message: Record<string, any>) => Promise<{ success: boolean }>;
 }
 
+export interface PluginRuntimeAPI {
+  currentRoot: () => Promise<{ unlocked: boolean; rootId: string | null }>;
+  listMineOrganizations: () => Promise<Array<{
+    orgId: string;
+    name: string;
+    description: string;
+    basePluginDomain?: string;
+    currentUserRole: 'admin' | 'member' | null;
+    isCurrentUserAdmin: boolean;
+    memberCount: number;
+    adminCount: number;
+    members: Array<{
+      rootId: string;
+      role: 'admin' | 'member';
+      joinedAt: number;
+      addedBy: string;
+      nodeInfo?: {
+        peerId?: string;
+        addresses: string[];
+      };
+    }>;
+  }>>;
+}
+
+export interface PluginDocAPI {
+  get: <T extends Record<string, unknown> = Record<string, unknown>>(collection: string, id: string) => Promise<T | null>;
+  put: (collection: string, id: string, doc: Record<string, unknown>) => Promise<{ success: boolean }>;
+  delete: (collection: string, id: string) => Promise<{ success: boolean }>;
+  query: <T extends Record<string, unknown> = Record<string, unknown>>(
+    collection: string,
+    options?: PluginDocQueryOptions
+  ) => Promise<{
+    items: Array<{ id: string; data: T }>;
+    nextCursor?: string;
+  }>;
+}
+
 export interface PluginSDK {
   /** 当前插件的域身份，由主进程绑定，渲染端不可修改 */
   domain: string;
   db: PluginDBAPI;
   evidence: PluginEvidenceAPI;
   p2p: PluginP2PAPI;
+  runtime: PluginRuntimeAPI;
+  docs: PluginDocAPI;
 }
 
 /**
@@ -76,6 +127,18 @@ export async function createPluginSDK(ipcRenderer: IpcRenderer): Promise<PluginS
       stop: () => ipcRenderer.invoke('p2p-stop'),
       broadcast: (topic: string, message: Record<string, any>) =>
         ipcRenderer.invoke('p2p-broadcast', topic, message)
+    },
+    runtime: {
+      currentRoot: () => ipcRenderer.invoke('plugin-current-root'),
+      listMineOrganizations: () => ipcRenderer.invoke('plugin-org-list-mine')
+    },
+    docs: {
+      get: (collection: string, id: string) => ipcRenderer.invoke('plugin-doc-get', collection, id),
+      put: (collection: string, id: string, doc: Record<string, unknown>) =>
+        ipcRenderer.invoke('plugin-doc-put', collection, id, doc),
+      delete: (collection: string, id: string) => ipcRenderer.invoke('plugin-doc-delete', collection, id),
+      query: (collection: string, options: PluginDocQueryOptions = {}) =>
+        ipcRenderer.invoke('plugin-doc-query', collection, options)
     }
   };
 }

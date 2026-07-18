@@ -1,6 +1,6 @@
 <template>
   <section class="root-gate">
-    <App v-if="showApp" />
+    <App v-if="isPluginWindow || showApp" />
 
     <el-card v-else class="gate-card" shadow="never" v-loading="authBusy" element-loading-text="正在登录...">
       <template #header>
@@ -52,6 +52,9 @@ export default defineComponent({
     LoginPage
   },
   setup() {
+    const search = new URLSearchParams(window.location.search);
+    const isPluginWindow = ref(Boolean(search.get('pluginDomain')));
+
     const rootStatus = ref<RootStatus>({ initialized: false, unlocked: false, rootId: null });
     const showApp = ref(false);
     const authBusy = ref(false);
@@ -104,10 +107,15 @@ export default defineComponent({
     };
 
     onMounted(async () => {
+      if (isPluginWindow.value) {
+        showApp.value = true;
+        return;
+      }
       await refreshStatus();
     });
 
     return {
+      isPluginWindow,
       rootStatus,
       showApp,
       authBusy,
@@ -124,7 +132,7 @@ export default defineComponent({
 <style scoped>
 .root-gate {
   min-height: 100vh;
-  padding: 16px;
+  padding: 0;
   box-sizing: border-box;
   background: #f5f7fa;
 }

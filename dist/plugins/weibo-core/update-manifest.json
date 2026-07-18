@@ -1,0 +1,16 @@
+{
+  "pluginId": "weibo-core",
+  "domain": "plugin:weibo-core",
+  "manifestVersion": 1,
+  "version": "0.1.0",
+  "releaseTime": "2026-07-18T03:14:08.880Z",
+  "assets": [
+    {
+      "kind": "package",
+      "fileName": "spark-plugin-weibo-core-0.1.0.spkg",
+      "url": "file:///Users/wely/workspace/spark/desktop/dist/plugins/weibo-core/spark-plugin-weibo-core-0.1.0.spkg",
+      "sha256": "bf43300ae6e5b2ea14aff3702627fdb001f0f97f0d5d1ada6f5c3dca82ae4d21",
+      "size": 21273
+    }
+  ]
+}

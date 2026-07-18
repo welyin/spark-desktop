@@ -28,6 +28,7 @@ export type OrganizationRecord = {
 	orgId: string;
 	name: string;
 	description: string;
+	basePluginDomain?: string;
 	createdAt: number;
 	createdBy: string;
 	updatedAt: number;
@@ -65,4 +66,5 @@ export type OrganizationSyncContext = {
 export type CreateOrganizationInput = {
 	name: string;
 	description?: string;
+	basePluginDomain: string;
 };

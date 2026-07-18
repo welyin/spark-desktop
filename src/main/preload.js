@@ -33,7 +33,21 @@ const api = {
   },
   plugin: {
     openView: (pluginDomain, pluginView = 'default') =>
-      ipcRenderer.invoke('plugin-open-view', pluginDomain, pluginView)
+      ipcRenderer.invoke('plugin-open-view', pluginDomain, pluginView),
+    listCatalog: () => ipcRenderer.invoke('plugin-list-catalog'),
+    currentRoot: () => ipcRenderer.invoke('plugin-current-root'),
+    listMineOrganizations: (pluginDomain) => ipcRenderer.invoke('plugin-org-list-mine', pluginDomain),
+    docGet: (collection, id, pluginDomain) => ipcRenderer.invoke('plugin-doc-get', collection, id, pluginDomain),
+    docPut: (collection, id, doc, pluginDomain) => ipcRenderer.invoke('plugin-doc-put', collection, id, doc, pluginDomain),
+    docDelete: (collection, id, pluginDomain) => ipcRenderer.invoke('plugin-doc-delete', collection, id, pluginDomain),
+    docQuery: (collection, options = {}, pluginDomain) => ipcRenderer.invoke('plugin-doc-query', collection, options, pluginDomain)
+  },
+  pluginMarket: {
+    list: () => ipcRenderer.invoke('plugin-market-list'),
+    checkUpdates: (pluginId) => ipcRenderer.invoke('plugin-market-check-updates', pluginId),
+    install: (pluginId) => ipcRenderer.invoke('plugin-market-install', pluginId),
+    upgrade: (pluginId) => ipcRenderer.invoke('plugin-market-upgrade', pluginId),
+    setEnabled: (pluginId, enabled) => ipcRenderer.invoke('plugin-market-set-enabled', pluginId, enabled)
   },
   organization: {
     listMine: () => ipcRenderer.invoke('org-list-mine'),

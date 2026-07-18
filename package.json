@@ -9,6 +9,7 @@
     "package": "electron-forge package",
     "make": "electron-forge make",
     "build": "electron-forge make",
+    "plugin:package:weibo": "node scripts/plugins/build-weibo-package.mjs",
     "test": "vitest",
     "test:unit": "vitest run"
   },
