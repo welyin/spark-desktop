@@ -1,8 +1,9 @@
 import crypto from 'crypto';
 import type { LevelDB } from '../db/base';
 import { getEvidenceHeadHash } from '../db/evidence';
-import { DIRECT_ORG_SHARE_PROTOCOL, DIRECT_VERSION_PROTOCOL } from './constants';
+import { DIRECT_ORG_SHARE_PROTOCOL, DIRECT_VERSION_PROTOCOL, P2P_DEFAULT_LISTEN_WS_PORT, P2P_LISTEN_WS_PORT } from './constants';
 import { getOrCreateLibp2pPrivateKey } from './identity-store';
+import { normalizePreferredPort, parseWsListenPort, pickListenPort } from './listen-port';
 import { PeerActivityStore } from './peer-activity-store';
 import { buildDialTargets, extractPeerId, normalizePeerIdList } from './peer-targets';
 import { OrgShareSyncService } from './org-share-sync';
@@ -35,6 +36,7 @@ export class P2PNode {
   private readonly appVersion: string;
   private readonly onPeerVersionObserved?: (version: string, peerId: string) => Promise<void> | void;
   private readonly versionProbeInFlight = new Set<string>();
+  private listenPort: number | null = null;
 
   constructor(
     private readonly db: LevelDB,
@@ -62,6 +64,19 @@ export class P2PNode {
 
   private async getOrCreateLibp2pPrivateKey(): Promise<any> {
     return getOrCreateLibp2pPrivateKey(this.db, runtimeImport);
+  }
+
+  private async getPersistedListenPort(): Promise<number> {
+    const encoded = await this.db.get(P2P_LISTEN_WS_PORT);
+    return normalizePreferredPort(encoded, P2P_DEFAULT_LISTEN_WS_PORT);
+  }
+
+  private async persistListenPort(port: number): Promise<void> {
+    if (!Number.isInteger(port) || port <= 0) {
+      return;
+    }
+    await this.db.put(P2P_LISTEN_WS_PORT, String(port));
+    this.listenPort = port;
   }
 
   private async rememberPeerNodeInfo(nodeInfo: PeerNodeInfo, result: 'success' | 'failure' | 'seen', error?: unknown): Promise<void> {
@@ -259,10 +274,15 @@ export class P2PNode {
       const { gossipsub } = await runtimeImport('@chainsafe/libp2p-gossipsub');
       const { identify } = await runtimeImport('@libp2p/identify');
       const libp2pPrivateKey = await this.getOrCreateLibp2pPrivateKey();
+      const preferredPort = await this.getPersistedListenPort();
+      const selectedPort = await pickListenPort(preferredPort);
+      const listenAddress = selectedPort > 0
+        ? `/ip4/0.0.0.0/tcp/${selectedPort}/ws`
+        : '/ip4/0.0.0.0/tcp/0/ws';
 
       this.node = await createLibp2p({
         privateKey: libp2pPrivateKey,
-        addresses: { listen: ['/ip4/0.0.0.0/tcp/0/ws'] },
+        addresses: { listen: [listenAddress] },
         transports: [webSockets()],
         streamMuxers: [mplex()],
         connectionEncrypters: [noise()],
@@ -279,6 +299,15 @@ export class P2PNode {
 
       await this.node.start();
       this.nodeId = typeof this.node.peerId?.toString === 'function' ? this.node.peerId.toString() : String(this.node.peerId);
+      const startedAddresses = typeof this.node.getMultiaddrs === 'function'
+        ? (this.node.getMultiaddrs() as any[])
+            .map((addr: any) => (typeof addr?.toString === 'function' ? addr.toString() : String(addr ?? '')))
+            .filter((value: string) => value.length > 0)
+        : [];
+      const actualPort = parseWsListenPort(startedAddresses);
+      if (actualPort) {
+        await this.persistListenPort(actualPort);
+      }
 
       if (typeof this.node.addEventListener === 'function') {
         this.node.addEventListener('peer:connect', async (event: any) => {
@@ -338,7 +367,7 @@ export class P2PNode {
         console.warn('[p2p] pubsub message handler binding failed: no supported API');
       }
 
-      console.log('[p2p] node started, peerId=', this.nodeId);
+      console.log('[p2p] node started, peerId=', this.nodeId, 'listenPort=', this.listenPort ?? 'unknown');
     })();
 
     try {
