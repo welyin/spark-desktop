@@ -158,4 +158,45 @@ describe('OrganizationService', () => {
 			})
 		).rejects.toThrow(/plugin domain/i);
 	});
+
+	it('fan-outs member node info sync to other known members', async () => {
+		const db = new MemoryDb();
+		const adminRootId = 'a'.repeat(64);
+		const firstMemberRootId = 'b'.repeat(64);
+		const secondMemberRootId = 'c'.repeat(64);
+		const syncCalls: string[] = [];
+
+		const service = new OrganizationService(db, {
+			getCurrentRootId: async () => adminRootId
+		}, {
+			syncOrganizationToMember: async ({ targetRootId }) => {
+				syncCalls.push(targetRootId);
+			}
+		});
+
+		const created = await service.createOrganization({
+			name: 'Fanout Org',
+			basePluginDomain: 'plugin:weibo-core'
+		});
+
+		await service.addMember(created.orgId, {
+			rootId: firstMemberRootId,
+			nodeInfo: {
+				peerId: 'QmFirstMemberPeer',
+				addresses: ['/ip4/127.0.0.1/tcp/15101/ws']
+			}
+		});
+
+		await service.addMember(created.orgId, {
+			rootId: secondMemberRootId,
+			nodeInfo: {
+				peerId: 'QmSecondMemberPeer',
+				addresses: ['/ip4/127.0.0.1/tcp/15102/ws']
+			}
+		});
+
+		expect(syncCalls).toContain(firstMemberRootId);
+		expect(syncCalls).toContain(secondMemberRootId);
+		expect(syncCalls.filter((target) => target === firstMemberRootId).length).toBeGreaterThanOrEqual(2);
+	});
 });

@@ -188,11 +188,7 @@ export class OrganizationService {
 				throw new Error('P2P organization sync is not configured');
 			}
 
-			await this.syncContext.syncOrganizationToMember({
-				organization: updatedRecord,
-				member: updatedMember,
-				targetRootId: normalizedMemberRootId
-			});
+			await this.syncOrganizationToKnownMembers(updatedRecord, currentRootId, normalizedMemberRootId);
 			console.log('[org] member sync published', {
 				orgId,
 				targetRootId: normalizedMemberRootId,
@@ -235,11 +231,7 @@ export class OrganizationService {
 			throw new Error('P2P organization sync is not configured');
 		}
 
-		await this.syncContext.syncOrganizationToMember({
-			organization: updatedRecord,
-			member: newMember,
-			targetRootId: normalizedMemberRootId
-		});
+		await this.syncOrganizationToKnownMembers(updatedRecord, currentRootId, normalizedMemberRootId);
 		console.log('[org] member sync published', {
 			orgId,
 			targetRootId: normalizedMemberRootId,
@@ -326,6 +318,43 @@ export class OrganizationService {
 			throw new Error('Root identity is locked');
 		}
 		return rootId;
+	}
+
+	private async syncOrganizationToKnownMembers(record: OrganizationRecord, actorRootId: string, requiredTargetRootId: string): Promise<void> {
+		if (!this.syncContext.syncOrganizationToMember) {
+			throw new Error('P2P organization sync is not configured');
+		}
+
+		const recipients = record.members.filter((member) => {
+			if (member.rootId === actorRootId) {
+				return false;
+			}
+			const nodeInfo = member.nodeInfo;
+			if (!nodeInfo) {
+				return false;
+			}
+			return Boolean((nodeInfo.peerId && nodeInfo.peerId.trim().length > 0) || nodeInfo.addresses.length > 0);
+		});
+
+		for (const member of recipients) {
+			const isRequiredTarget = member.rootId === requiredTargetRootId;
+			try {
+				await this.syncContext.syncOrganizationToMember({
+					organization: record,
+					member,
+					targetRootId: member.rootId
+				});
+			} catch (error) {
+				if (isRequiredTarget) {
+					throw error;
+				}
+				console.warn('[org] best-effort member sync failed', {
+					orgId: record.orgId,
+					targetRootId: member.rootId,
+					error: String(error)
+				});
+			}
+		}
 	}
 
 	private toView(record: OrganizationRecord, currentRootId: string): OrganizationView {
