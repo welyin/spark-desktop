@@ -10,6 +10,7 @@ export function normalizeIncomingSnapshot(organization: any): OrganizationSyncSn
     orgId: organization.orgId,
     name: organization.name,
     description: organization.description,
+    basePluginDomain: organization.basePluginDomain,
     createdAt: organization.createdAt,
     createdBy: organization.createdBy,
     updatedAt: organization.updatedAt,

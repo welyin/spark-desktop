@@ -57,8 +57,34 @@ function normalizeFileUrl(url: string): string {
   return url;
 }
 
-function resolveLocalReleaseDir(pluginId: string): string {
-  return path.resolve(app.getAppPath(), '..', 'dist', 'plugins', pluginId);
+function resolveLocalReleaseDirs(pluginId: string): string[] {
+  const appPath = app.getAppPath();
+  const candidates = [
+    path.resolve(appPath, 'dist', 'plugins', pluginId),
+    path.resolve(appPath, '..', 'dist', 'plugins', pluginId),
+    path.resolve(process.cwd(), 'dist', 'plugins', pluginId)
+  ];
+
+  const unique = new Set<string>();
+  for (const dir of candidates) {
+    unique.add(path.normalize(dir));
+  }
+  return [...unique];
+}
+
+function resolveLocalSourcePluginDirs(pluginId: string): string[] {
+  const appPath = app.getAppPath();
+  const candidates = [
+    path.resolve(appPath, 'src', 'plugins', pluginId),
+    path.resolve(appPath, '..', 'src', 'plugins', pluginId),
+    path.resolve(process.cwd(), 'src', 'plugins', pluginId)
+  ];
+
+  const unique = new Set<string>();
+  for (const dir of candidates) {
+    unique.add(path.normalize(dir));
+  }
+  return [...unique];
 }
 
 export class PluginMarketService {
@@ -72,6 +98,7 @@ export class PluginMarketService {
 
   async initialize(): Promise<void> {
     this.state = await readJsonFile<PersistedPluginState>(this.stateFilePath, { installed: {} });
+    await this.reconcileBundledInstalledState();
   }
 
   private async persist(): Promise<void> {
@@ -87,14 +114,11 @@ export class PluginMarketService {
   }
 
   private resolveManifestEndpoints(item: PluginCatalogItem): { manifestUrl: string; signatureUrl: string } {
-    const localDir = resolveLocalReleaseDir(item.id);
-    const localManifestPath = path.join(localDir, 'update-manifest.json');
-    const localSignaturePath = path.join(localDir, 'update-manifest.sig');
-
-    if (fs.existsSync(localManifestPath) && fs.existsSync(localSignaturePath)) {
+    const bundled = this.resolveBundledManifestPaths(item);
+    if (bundled) {
       return {
-        manifestUrl: toFileUrl(localManifestPath),
-        signatureUrl: toFileUrl(localSignaturePath)
+        manifestUrl: toFileUrl(bundled.manifestPath),
+        signatureUrl: toFileUrl(bundled.signaturePath)
       };
     }
 
@@ -102,6 +126,149 @@ export class PluginMarketService {
       manifestUrl: normalizeFileUrl(item.package.updateManifestUrl),
       signatureUrl: normalizeFileUrl(item.package.signatureUrl)
     };
+  }
+
+  private resolveBundledManifestPaths(item: PluginCatalogItem): { manifestPath: string; signaturePath: string; localDir: string } | null {
+    for (const localDir of resolveLocalReleaseDirs(item.id)) {
+      const manifestPath = path.join(localDir, 'update-manifest.json');
+      const signaturePath = path.join(localDir, 'update-manifest.sig');
+      if (!fs.existsSync(manifestPath) || !fs.existsSync(signaturePath)) {
+        continue;
+      }
+
+      return {
+        manifestPath,
+        signaturePath,
+        localDir
+      };
+    }
+    return null;
+  }
+
+  private resolveBundledSourcePluginDir(item: PluginCatalogItem): string | null {
+    for (const dir of resolveLocalSourcePluginDirs(item.id)) {
+      if (!fs.existsSync(dir)) {
+        continue;
+      }
+      const hasManifestTs = fs.existsSync(path.join(dir, 'manifest.ts'));
+      const hasManifestJs = fs.existsSync(path.join(dir, 'manifest.js'));
+      if (hasManifestTs || hasManifestJs) {
+        return dir;
+      }
+    }
+    return null;
+  }
+
+  private buildDevSourceInstalledState(item: PluginCatalogItem): InstalledPluginState | null {
+    const sourceDir = this.resolveBundledSourcePluginDir(item);
+    if (!sourceDir) {
+      return null;
+    }
+
+    return {
+      pluginId: item.id,
+      version: item.version,
+      packagePath: sourceDir,
+      sha256: 'bundled-dev-source',
+      size: 0,
+      installedAt: 0,
+      enabled: true
+    };
+  }
+
+  private async reconcileBundledInstalledState(): Promise<void> {
+    const trust = getPluginTrustConfig();
+    let changed = false;
+
+    for (const item of listPluginCatalog()) {
+      if (this.state.installed[item.id]) {
+        continue;
+      }
+
+      const bundled = this.resolveBundledManifestPaths(item);
+      if (bundled) {
+        try {
+          const manifestText = await fs.promises.readFile(bundled.manifestPath, 'utf8');
+          const signatureText = (await fs.promises.readFile(bundled.signaturePath, 'utf8')).trim();
+          const verified = verifyManifestSignature(manifestText, signatureText, trust.publicKeysPem);
+          if (!verified) {
+            continue;
+          }
+
+          const manifest = JSON.parse(manifestText) as PluginReleaseManifest;
+          if (manifest.pluginId !== item.id || manifest.domain !== item.domain) {
+            continue;
+          }
+
+          const asset = manifest.assets.find((entry) => entry.kind === 'package');
+          if (!asset) {
+            continue;
+          }
+
+          const packagePath = path.join(bundled.localDir, asset.fileName);
+          if (!fs.existsSync(packagePath)) {
+            continue;
+          }
+
+          const digest = await computeFileSha256(packagePath);
+          const size = await fileSize(packagePath);
+          if (digest !== asset.sha256 || size !== asset.size) {
+            continue;
+          }
+
+          this.state.installed[item.id] = {
+            pluginId: item.id,
+            version: manifest.version,
+            packagePath,
+            sha256: digest,
+            size,
+            installedAt: Date.now(),
+            enabled: true
+          };
+          this.updateProbes[item.id] = {
+            pluginId: item.id,
+            checkedAt: Date.now(),
+            latestVersion: manifest.version,
+            updateAvailable: false,
+            reason: 'bundled'
+          };
+          changed = true;
+        } catch {
+          // Ignore broken local bundle metadata and keep explicit install flow available.
+        }
+      }
+
+      if (this.state.installed[item.id]) {
+        continue;
+      }
+
+      const sourceDir = this.resolveBundledSourcePluginDir(item);
+      if (!sourceDir) {
+        continue;
+      }
+
+      this.state.installed[item.id] = {
+        pluginId: item.id,
+        version: item.version,
+        packagePath: sourceDir,
+        sha256: 'bundled-dev-source',
+        size: 0,
+        installedAt: Date.now(),
+        enabled: true
+      };
+      this.updateProbes[item.id] = {
+        pluginId: item.id,
+        checkedAt: Date.now(),
+        latestVersion: item.version,
+        updateAvailable: false,
+        reason: 'bundled-dev-source'
+      };
+      changed = true;
+    }
+
+    if (changed) {
+      await this.persist();
+    }
   }
 
   private async loadVerifiedManifest(item: PluginCatalogItem): Promise<PluginReleaseManifest> {
@@ -262,7 +429,7 @@ export class PluginMarketService {
     const catalog = listPluginCatalog();
 
     return catalog.map((item) => {
-      const installed = this.state.installed[item.id] ?? null;
+      const installed = this.state.installed[item.id] ?? this.buildDevSourceInstalledState(item);
       const probe = this.updateProbes[item.id] ?? null;
 
       return {

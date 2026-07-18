@@ -22,7 +22,7 @@ export type OrganizationTransactionRecord = {
 
 export type OrganizationSyncSnapshot = {
 	orgId: string;
-	summary: Pick<OrganizationRecord, 'orgId' | 'name' | 'description' | 'createdAt' | 'createdBy' | 'updatedAt'> & {
+	summary: Pick<OrganizationRecord, 'orgId' | 'name' | 'description' | 'basePluginDomain' | 'createdAt' | 'createdBy' | 'updatedAt'> & {
 		memberCount: number;
 		adminCount: number;
 	};
@@ -51,6 +51,7 @@ export function buildOrganizationSyncSnapshot(record: OrganizationRecord, transa
 			orgId: record.orgId,
 			name: record.name,
 			description: record.description,
+			basePluginDomain: record.basePluginDomain,
 			createdAt: record.createdAt,
 			createdBy: record.createdBy,
 			updatedAt: record.updatedAt,
@@ -115,6 +116,7 @@ export function mergeOrganizationSyncSnapshot(existing: OrganizationRecord | nul
 		orgId: snapshot.summary.orgId,
 		name: snapshot.summary.name,
 		description: snapshot.summary.description,
+		basePluginDomain: snapshot.summary.basePluginDomain ?? existing?.basePluginDomain,
 		createdAt: snapshot.summary.createdAt,
 		createdBy: snapshot.summary.createdBy,
 		updatedAt: Math.max(existing?.updatedAt ?? 0, snapshot.summary.updatedAt),
