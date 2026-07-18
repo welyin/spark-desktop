@@ -61,4 +61,29 @@ describe('organization sync snapshot', () => {
 
     expect(normalized.summary.basePluginDomain).toBe('plugin:weibo-core');
   });
+
+  it('syncs custom organization properties without explicit field mapping', () => {
+    const source = {
+      ...createRecord('plugin:weibo-core'),
+      basePluginContent: {
+        entry: 'timeline',
+        permissions: ['post', 'comment']
+      },
+      policyVersion: 3
+    } as OrganizationRecord & {
+      basePluginContent: { entry: string; permissions: string[] };
+      policyVersion: number;
+    };
+
+    const snapshot = buildOrganizationSyncSnapshot(source);
+    const merged = mergeOrganizationSyncSnapshot(null, snapshot) as OrganizationRecord & {
+      basePluginContent?: { entry: string; permissions: string[] };
+      policyVersion?: number;
+    };
+
+    expect(snapshot.summary.metadata?.basePluginContent).toEqual(source.basePluginContent);
+    expect(snapshot.summary.metadata?.policyVersion).toBe(3);
+    expect(merged.basePluginContent).toEqual(source.basePluginContent);
+    expect(merged.policyVersion).toBe(3);
+  });
 });

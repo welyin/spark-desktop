@@ -7,6 +7,7 @@ export function normalizeIncomingSnapshot(organization: any): OrganizationSyncSn
   }
 
   const record: OrganizationRecord = {
+    ...(organization as Record<string, unknown>),
     orgId: organization.orgId,
     name: organization.name,
     description: organization.description,

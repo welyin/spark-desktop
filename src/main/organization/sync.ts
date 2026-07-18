@@ -25,6 +25,7 @@ export type OrganizationSyncSnapshot = {
 	summary: Pick<OrganizationRecord, 'orgId' | 'name' | 'description' | 'basePluginDomain' | 'createdAt' | 'createdBy' | 'updatedAt'> & {
 		memberCount: number;
 		adminCount: number;
+		metadata?: Record<string, unknown>;
 	};
 	members: Array<Pick<OrganizationMember, 'rootId' | 'role' | 'joinedAt' | 'addedBy'> & {
 		nodeInfo?: Pick<OrganizationNodeInfo, 'peerId' | 'addresses'>;
@@ -32,6 +33,30 @@ export type OrganizationSyncSnapshot = {
 	transactions: OrganizationTransactionRecord[];
 	sync: OrganizationSyncVersions;
 };
+
+const ORGANIZATION_SYNC_RESERVED_KEYS = new Set([
+	'orgId',
+	'name',
+	'description',
+	'basePluginDomain',
+	'createdAt',
+	'createdBy',
+	'updatedAt',
+	'members',
+	'sync'
+]);
+
+function extractOrganizationSyncMetadata(record: OrganizationRecord): Record<string, unknown> | undefined {
+	const metadata: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(record as unknown as Record<string, unknown>)) {
+		if (ORGANIZATION_SYNC_RESERVED_KEYS.has(key)) {
+			continue;
+		}
+		metadata[key] = value;
+	}
+
+	return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
 
 export function buildOrganizationSyncVersions(record: OrganizationRecord, transactionsVersion = record.updatedAt): OrganizationSyncVersions {
 	return {
@@ -56,7 +81,8 @@ export function buildOrganizationSyncSnapshot(record: OrganizationRecord, transa
 			createdBy: record.createdBy,
 			updatedAt: record.updatedAt,
 			memberCount,
-			adminCount
+			adminCount,
+			metadata: extractOrganizationSyncMetadata(record)
 		},
 		members: record.members.map((member) => ({
 			rootId: member.rootId,
@@ -112,7 +138,24 @@ export function mergeOrganizationSyncSnapshot(existing: OrganizationRecord | nul
 		});
 	}
 
+	const existingDynamic = (existing ?? {}) as Record<string, unknown>;
+	const incomingDynamic = snapshot.summary.metadata ?? {};
+	const mergedDynamic: Record<string, unknown> = {
+		...existingDynamic,
+		...incomingDynamic
+	};
+	delete mergedDynamic.members;
+	delete mergedDynamic.sync;
+	delete mergedDynamic.orgId;
+	delete mergedDynamic.name;
+	delete mergedDynamic.description;
+	delete mergedDynamic.basePluginDomain;
+	delete mergedDynamic.createdAt;
+	delete mergedDynamic.createdBy;
+	delete mergedDynamic.updatedAt;
+
 	const nextRecord: OrganizationRecord = {
+		...(mergedDynamic as unknown as Partial<OrganizationRecord>),
 		orgId: snapshot.summary.orgId,
 		name: snapshot.summary.name,
 		description: snapshot.summary.description,
