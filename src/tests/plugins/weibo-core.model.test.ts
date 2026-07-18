@@ -8,10 +8,10 @@ import {
 } from '../../plugins/weibo-core/model';
 
 describe('weibo-core model', () => {
-  it('enforces publish permission to super admin only', () => {
-    expect(canPublishPost('root-admin', 'root-admin')).toBe(true);
-    expect(canPublishPost('root-admin', 'root-member')).toBe(false);
-    expect(canPublishPost(null, 'root-member')).toBe(false);
+  it('enforces publish permission to organization admins only', () => {
+    expect(canPublishPost('admin')).toBe(true);
+    expect(canPublishPost('member')).toBe(false);
+    expect(canPublishPost(null)).toBe(false);
   });
 
   it('enforces 260-char max text constraint', () => {

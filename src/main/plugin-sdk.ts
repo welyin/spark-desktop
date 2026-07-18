@@ -38,6 +38,7 @@ export interface PluginP2PAPI {
 
 export interface PluginRuntimeAPI {
   currentRoot: () => Promise<{ unlocked: boolean; rootId: string | null }>;
+  syncOrganizationData: (orgId: string) => Promise<{ orgId: string; attempted: number; pulled: number }>;
   listMineOrganizations: () => Promise<Array<{
     orgId: string;
     name: string;
@@ -130,6 +131,7 @@ export async function createPluginSDK(ipcRenderer: IpcRenderer): Promise<PluginS
     },
     runtime: {
       currentRoot: () => ipcRenderer.invoke('plugin-current-root'),
+      syncOrganizationData: (orgId: string) => ipcRenderer.invoke('plugin-org-sync-now', orgId),
       listMineOrganizations: () => ipcRenderer.invoke('plugin-org-list-mine')
     },
     docs: {

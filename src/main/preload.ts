@@ -68,6 +68,7 @@ export type ElectronAPI = {
       };
     }>>;
     currentRoot: () => Promise<{ unlocked: boolean; rootId: string | null }>;
+    syncOrganizationData: (orgId: string, pluginDomain?: string) => Promise<{ orgId: string; attempted: number; pulled: number }>;
     listMineOrganizations: (pluginDomain?: string) => Promise<Array<{
       orgId: string;
       name: string;
@@ -369,6 +370,7 @@ const api = {
       ipcRenderer.invoke('plugin-open-view', pluginDomain, pluginView),
     listCatalog: () => ipcRenderer.invoke('plugin-list-catalog'),
     currentRoot: () => ipcRenderer.invoke('plugin-current-root'),
+    syncOrganizationData: (orgId: string, pluginDomain?: string) => ipcRenderer.invoke('plugin-org-sync-now', orgId, pluginDomain),
     listMineOrganizations: (pluginDomain?: string) => ipcRenderer.invoke('plugin-org-list-mine', pluginDomain),
     docGet: (collection: string, id: string, pluginDomain?: string) => ipcRenderer.invoke('plugin-doc-get', collection, id, pluginDomain),
     docPut: (collection: string, id: string, doc: Record<string, unknown>, pluginDomain?: string) =>

@@ -399,6 +399,73 @@ app.whenReady().then(() => {
     return await organizationService.listMine();
   });
 
+  registerInvokeHandler('plugin-org-sync-now', async (event, orgId: string, pluginDomain?: string) => {
+    const domain = resolvePluginDomainAccess(event, pluginDomain);
+    if (!orgId || typeof orgId !== 'string') {
+      throw new Error('Organization id is required');
+    }
+
+    if (!isP2PInitialized() || !getP2PNode().isStarted()) {
+      await ensureCoreServicesStarted();
+    }
+
+    const organizations = await organizationService.listMine();
+    const target = organizations.find((item) => item.orgId === orgId);
+    if (!target) {
+      throw new Error('Organization not found or not joined');
+    }
+
+    if (target.basePluginDomain !== domain) {
+      throw new Error('Organization does not belong to current plugin domain');
+    }
+
+    const status = await rootIdentityManager.getStatus();
+    const currentRootId = status.rootId;
+    if (!currentRootId) {
+      throw new Error('Root identity is unavailable');
+    }
+
+    const candidates = target.members
+      .filter((member) => member.rootId !== currentRootId && member.nodeInfo)
+      .sort((a, b) => (a.role === 'admin' ? -1 : 1) - (b.role === 'admin' ? -1 : 1));
+
+    let attempted = 0;
+    let pulled = 0;
+
+    for (const member of candidates) {
+      const nodeInfo = member.nodeInfo;
+      if (!nodeInfo) {
+        continue;
+      }
+
+      const hasPeer = Boolean(nodeInfo.peerId && nodeInfo.peerId.trim().length > 0);
+      const hasAddress = Array.isArray(nodeInfo.addresses) && nodeInfo.addresses.length > 0;
+      if (!hasPeer && !hasAddress) {
+        continue;
+      }
+
+      attempted += 1;
+      try {
+        const result = await getP2PNode().pullOrganizationsFromPeer(nodeInfo);
+        if (result.pulled > 0 || result.synced > 0) {
+          pulled += 1;
+        }
+      } catch (error) {
+        console.warn('[plugin-org-sync-now] pull failed', {
+          orgId,
+          memberRootId: member.rootId,
+          error: String(error)
+        });
+      }
+    }
+
+    return {
+      orgId,
+      attempted,
+      pulled
+    };
+  });
+
   registerInvokeHandler('plugin-doc-get', async (event, collection: string, id: string, pluginDomain?: string) => {
     const domain = resolvePluginDomainAccess(event, pluginDomain);
     const coll = getPluginCollection(levelDB, domain, collection);

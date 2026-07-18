@@ -39,6 +39,19 @@ describe('weibo-core service', () => {
     expect(sdk.docs.put).toHaveBeenCalledTimes(2);
   });
 
+  it('allows admin to create posts but rejects member publishing', async () => {
+    const sdk = createMockSdk();
+    const service = new WeiboCoreService(sdk);
+
+    await expect(service.createPost('org-1', 'root-admin', 'hello', 'admin')).resolves.toMatchObject({
+      orgId: 'org-1',
+      authorRootId: 'root-admin',
+      content: 'hello'
+    });
+
+    await expect(service.createPost('org-1', 'root-member', 'should fail', 'member')).rejects.toThrow(/admins/i);
+  });
+
   it('queries by orgId to keep cross-device sync scope stable', async () => {
     const sdk = createMockSdk();
     sdk.docs.query.mockResolvedValue({ items: [], nextCursor: undefined });

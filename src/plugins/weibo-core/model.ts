@@ -23,8 +23,8 @@ export type WeiboCommentNode = {
   replies: WeiboComment[];
 };
 
-export function canPublishPost(superAdminRootId: string | null, currentRootId: string | null): boolean {
-  return Boolean(superAdminRootId && currentRootId && superAdminRootId === currentRootId);
+export function canPublishPost(currentRole: 'admin' | 'member' | null | undefined): boolean {
+  return currentRole === 'admin';
 }
 
 export function normalizeWeiboText(content: string): string {

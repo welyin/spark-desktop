@@ -14,6 +14,8 @@ export type WeiboOrgConfig = {
   createdAt: number;
 };
 
+type WeiboAuthorRole = 'admin' | 'member' | null | undefined;
+
 function newId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
 }
@@ -38,7 +40,11 @@ export class WeiboCoreService {
     return created;
   }
 
-  async createPost(orgId: string, rootId: string, content: string): Promise<WeiboPost> {
+  async createPost(orgId: string, rootId: string, content: string, authorRole: WeiboAuthorRole): Promise<WeiboPost> {
+    if (authorRole !== 'admin') {
+      throw new Error('Only organization admins can publish posts');
+    }
+
     const post: WeiboPost = {
       id: newId('post'),
       orgId,

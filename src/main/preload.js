@@ -37,6 +37,7 @@ const api = {
       ipcRenderer.invoke('plugin-open-view', pluginDomain, pluginView),
     listCatalog: () => ipcRenderer.invoke('plugin-list-catalog'),
     currentRoot: () => ipcRenderer.invoke('plugin-current-root'),
+    syncOrganizationData: (orgId, pluginDomain) => ipcRenderer.invoke('plugin-org-sync-now', orgId, pluginDomain),
     listMineOrganizations: (pluginDomain) => ipcRenderer.invoke('plugin-org-list-mine', pluginDomain),
     docGet: (collection, id, pluginDomain) => ipcRenderer.invoke('plugin-doc-get', collection, id, pluginDomain),
     docPut: (collection, id, doc, pluginDomain) => ipcRenderer.invoke('plugin-doc-put', collection, id, doc, pluginDomain),

@@ -14,7 +14,7 @@
         <div>
           <p class="eyebrow">基础插件</p>
           <h2>组织微博</h2>
-          <p class="lede">主管理员可发布 260 字以内短文，组织成员可评论与回复。</p>
+          <p class="lede">组织管理员可发布 260 字以内短文，组织成员可评论与回复。</p>
         </div>
         <el-button @click="reloadAll" :loading="loading">刷新</el-button>
       </div>
@@ -39,8 +39,8 @@
 
       <div v-if="activeOrg" class="meta-row">
         <el-tag type="info">当前 RootID: {{ currentRootId || '-' }}</el-tag>
-        <el-tag :type="isSuperAdmin ? 'danger' : 'warning'">
-          {{ isSuperAdmin ? '主管理员' : '组织成员' }}
+        <el-tag :type="canPost ? 'danger' : 'warning'">
+          {{ canPost ? '组织管理员' : '组织成员' }}
         </el-tag>
       </div>
     </el-card>
@@ -62,11 +62,11 @@
         placeholder="输入短文（最多260字）"
       />
       <div class="actions">
-        <el-button type="primary" :disabled="!isSuperAdmin" :loading="posting" @click="submitPost">
+        <el-button type="primary" :disabled="!canPost" :loading="posting" @click="submitPost">
           发送短文
         </el-button>
       </div>
-      <p class="hint" v-if="!isSuperAdmin">只有主管理员可以发布短文。</p>
+      <p class="hint" v-if="!canPost">只有组织管理员可以发布短文。</p>
     </el-card>
 
     <el-card v-if="activeOrg" shadow="never">
@@ -159,6 +159,10 @@ type OrganizationView = {
   members: Array<{
     rootId: string;
     role: 'admin' | 'member';
+    nodeInfo?: {
+      peerId?: string;
+      addresses: string[];
+    };
   }>;
 };
 
@@ -219,9 +223,13 @@ export default defineComponent({
     const replyDraftByComment = ref<Record<string, string>>({});
 
     const activeOrg = computed(() => orgOptions.value.find((org) => org.orgId === selectedOrgId.value) ?? null);
-    const isSuperAdmin = computed(() => {
-      return canPublishPost(orgConfig.value?.superAdminRootId ?? null, currentRootId.value);
+    const currentOrgRole = computed<'admin' | 'member' | null>(() => {
+      if (!activeOrg.value || !currentRootId.value) {
+        return null;
+      }
+      return activeOrg.value.members.find((member) => member.rootId === currentRootId.value)?.role ?? null;
     });
+    const canPost = computed(() => canPublishPost(currentOrgRole.value));
 
     const setMessage = (text: string, type: 'info' | 'success' | 'warning' | 'error' = 'info') => {
       message.value = text;
@@ -285,6 +293,19 @@ export default defineComponent({
       comments.value = await service.value.loadComments(selectedOrgId.value);
     };
 
+    const syncLatestFromPeers = async () => {
+      if (!selectedOrgId.value) {
+        return;
+      }
+
+      const plugin = await ensureSdk();
+      try {
+        await plugin.runtime.syncOrganizationData(selectedOrgId.value);
+      } catch (error) {
+        setMessage(`成员数据同步失败：${error}`, 'warning');
+      }
+    };
+
     const reloadAll = async () => {
       loading.value = true;
       try {
@@ -293,6 +314,7 @@ export default defineComponent({
         currentRootId.value = identity.rootId;
 
         await loadOrganizations();
+        await syncLatestFromPeers();
         await loadTimeline();
       } catch (error) {
         setMessage(`加载失败：${error}`, 'error');
@@ -310,8 +332,8 @@ export default defineComponent({
         ElMessage.warning(validation.reason || '短文内容不合法');
         return;
       }
-      if (!isSuperAdmin.value) {
-        ElMessage.warning('只有主管理员可以发帖');
+      if (!canPost.value) {
+        ElMessage.warning('只有组织管理员可以发帖');
         return;
       }
 
@@ -321,7 +343,7 @@ export default defineComponent({
         if (!service.value) {
           throw new Error('Plugin service unavailable');
         }
-        await service.value.createPost(selectedOrgId.value, currentRootId.value, postDraft.value);
+        await service.value.createPost(selectedOrgId.value, currentRootId.value, postDraft.value, currentOrgRole.value);
         postDraft.value = '';
         await loadTimeline();
         setMessage('短文发布成功（已进入插件域数据并触发P2P同步）', 'success');
@@ -438,7 +460,7 @@ export default defineComponent({
       orgOptions,
       selectedOrgId,
       activeOrg,
-      isSuperAdmin,
+      canPost,
       posts,
       postDraft,
       commentDraftByPost,

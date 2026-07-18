@@ -292,6 +292,32 @@ export class OrgPullSyncService {
       const remote = remoteVersions.get(orgId);
 
       if (local && !remote) {
+        const response = await this.requestDirect(nodeInfo, {
+          type: 'org-pull-org',
+          payload: {
+            requesterRootId: currentRootId,
+            requesterPeerId,
+            orgId
+          }
+        });
+
+        if (response?.type === 'org-pull-org-response' && response.ok && response.status === 'removed') {
+          await this.deps.db.del(`${ORG_META_PREFIX}${orgId}`);
+          removed += 1;
+          continue;
+        }
+
+        if (response?.type === 'org-pull-org-response' && response.ok && response.status === 'member' && response.organization) {
+          const existing = parseOrganizationRecord(await this.deps.db.get(`${ORG_META_PREFIX}${orgId}`) ?? '') ?? null;
+          const merged = mergeOrganizationSyncSnapshot(existing, normalizeIncomingSnapshot(response.organization));
+          await this.deps.db.put(`${ORG_META_PREFIX}${orgId}`, JSON.stringify(merged));
+          if (Array.isArray(response.pluginDocs) && response.pluginDocs.length > 0) {
+            await applyPluginDocSyncItems(this.deps.db, response.pluginDocs);
+          }
+          pulled += 1;
+          continue;
+        }
+
         if (this.deps.syncOrganizationToMember) {
           pushAttempted += 1;
           try {
