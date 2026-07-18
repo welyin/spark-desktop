@@ -6,6 +6,7 @@ import { buildOrganizationSyncSnapshot, isOrganizationSyncStale, mergeOrganizati
 import { OrgShareSessionState } from './org-share-session';
 import { OrgPullSyncService } from './org-pull-sync';
 import { normalizeIncomingSnapshot } from './org-share-snapshot';
+import { applyPluginDocSyncItems, collectSyncablePluginDocsByOrg } from './plugin-org-sync';
 import { parseJsonSafely, readStreamAsString, resolveProtocolStream, writeStringToStream } from './stream-utils';
 import type { P2PIdentityContext, PeerNodeInfo } from './types';
 
@@ -139,18 +140,18 @@ export class OrgShareSyncService {
     await this.deps.db.open();
     const existingRaw = await this.deps.db.get(`org:meta:${organization.orgId}`);
     const existing = existingRaw ? JSON.parse(existingRaw) : null;
-    const snapshot = normalizeIncomingSnapshot({
-      ...organization,
-      members
-    });
+    const snapshot = normalizeIncomingSnapshot({ ...organization, members });
     const merged = mergeOrganizationSyncSnapshot(existing, snapshot);
     await this.deps.db.put(`org:meta:${organization.orgId}`, JSON.stringify(merged));
+    const pluginDocs = Array.isArray(payload?.pluginDocs) ? payload.pluginDocs : [];
+    const appliedPluginDocs = pluginDocs.length ? await applyPluginDocSyncItems(this.deps.db, pluginDocs) : 0;
     const persisted = await this.deps.db.get(`org:meta:${organization.orgId}`);
     console.log(`[p2p][org-share][${source}] organization synced from peer`, {
       orgId: organization.orgId,
       syncId,
       persisted: !!persisted,
-      memberCount: merged.members.length
+      memberCount: merged.members.length,
+      appliedPluginDocs
     });
 
     return {
@@ -340,10 +341,8 @@ export class OrgShareSyncService {
         targetRootId,
         syncId,
         organization: snapshot,
-        nodeInfo: {
-          peerId: nodeInfo.peerId,
-          addresses: nodeInfo.addresses
-        }
+        pluginDocs: await collectSyncablePluginDocsByOrg(this.deps.db, snapshot.orgId),
+        nodeInfo: { peerId: nodeInfo.peerId, addresses: nodeInfo.addresses }
       }
     } as const;
 

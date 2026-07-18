@@ -272,4 +272,20 @@ export class PeerActivityStore {
       return bScore - aScore;
     });
   }
+
+  /** 清空全部节点活跃度记录（数据库 + 内存缓存）。 */
+  async clearAllRecords(): Promise<number> {
+    const rows = await this.db.queryRange({
+      prefix: P2P_PEER_RECORD_PREFIX,
+      start: P2P_PEER_RECORD_PREFIX,
+      end: `${P2P_PEER_RECORD_PREFIX}\xFF`
+    });
+
+    for (const row of rows) {
+      await this.db.del(row.key);
+    }
+
+    this.cache.clear();
+    return rows.length;
+  }
 }

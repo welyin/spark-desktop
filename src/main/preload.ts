@@ -32,6 +32,7 @@ export type ElectronAPI = {
     start: () => Promise<{ started: boolean }>;
     stop: () => Promise<{ started: boolean }>;
     broadcast: (topic: string, message: any) => Promise<{ success: boolean }>;
+    clearPeerRecords: () => Promise<{ cleared: number }>;
     syncPeerOrganizations: (targetPeer: { peerId?: string; addresses: string[] }) => Promise<{
       attempted: number;
       synced: number;
@@ -351,6 +352,7 @@ const api = {
     start: () => ipcRenderer.invoke('p2p-start'),
     stop: () => ipcRenderer.invoke('p2p-stop'),
     broadcast: (topic: string, message: any) => ipcRenderer.invoke('p2p-broadcast', topic, message),
+    clearPeerRecords: () => ipcRenderer.invoke('p2p-clear-peer-records'),
     syncPeerOrganizations: (targetPeer: { peerId?: string; addresses: string[] }) => {
       const payload = {
         peerId: targetPeer?.peerId,

@@ -614,6 +614,16 @@ app.whenReady().then(() => {
     };
   });
 
+  registerInvokeHandler('p2p-clear-peer-records', async (event) => {
+    requireSystemDomain(event);
+
+    if (!isP2PInitialized()) {
+      await ensureCoreServicesStarted();
+    }
+
+    return await getP2PNode().clearSavedPeerRecords();
+  });
+
   registerInvokeHandler('update-status', async (event) => {
     requireSystemDomain(event);
     return await getUpdaterService().getSnapshot();

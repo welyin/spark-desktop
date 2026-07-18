@@ -2,6 +2,7 @@ import { DIRECT_ORG_SHARE_PROTOCOL, ORG_META_PREFIX } from './constants';
 import { buildDialTargets } from './peer-targets';
 import { buildOrganizationSyncSnapshot, isOrganizationSyncStale, mergeOrganizationSyncSnapshot, type OrganizationSyncVersions } from '../organization/sync';
 import { normalizeIncomingSnapshot } from './org-share-snapshot';
+import { applyPluginDocSyncItems, collectSyncablePluginDocsByOrg } from './plugin-org-sync';
 import { parseJsonSafely, readStreamAsString, resolveProtocolStream, writeStringToStream } from './stream-utils';
 import type { LevelDB } from '../db/base';
 import type { P2PIdentityContext, PeerNodeInfo } from './types';
@@ -50,6 +51,7 @@ type PullOrgResponse = {
   orgId: string;
   status?: 'member' | 'removed';
   organization?: any;
+  pluginDocs?: any[];
   reason?: string;
 };
 
@@ -206,7 +208,8 @@ export class OrgPullSyncService {
       type: 'org-pull-org-response',
       orgId,
       status: 'member',
-      organization: snapshot
+      organization: snapshot,
+      pluginDocs: await collectSyncablePluginDocsByOrg(this.deps.db, orgId)
     };
   }
 
@@ -370,6 +373,9 @@ export class OrgPullSyncService {
         const existing = raw ? parseOrganizationRecord(raw) : null;
         const merged = mergeOrganizationSyncSnapshot(existing, normalizeIncomingSnapshot(response.organization));
         await this.deps.db.put(`${ORG_META_PREFIX}${orgId}`, JSON.stringify(merged));
+        if (Array.isArray(response.pluginDocs) && response.pluginDocs.length > 0) {
+          await applyPluginDocSyncItems(this.deps.db, response.pluginDocs);
+        }
         pulled += 1;
       }
     }

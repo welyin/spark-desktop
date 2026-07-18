@@ -30,9 +30,14 @@
           <h2>节点面板</h2>
           <p class="subtitle">展示本地保存的所有节点数据，并可按节点触发组织同步。</p>
         </div>
-        <el-button type="primary" @click="refreshNodes" :loading="loadingNodes" :disabled="loadingNodes">
-          {{ loadingNodes ? '刷新中...' : '刷新节点' }}
-        </el-button>
+        <div class="panel-actions">
+          <el-button type="danger" plain @click="clearNodes" :loading="clearingNodes" :disabled="loadingNodes || clearingNodes">
+            {{ clearingNodes ? '清空中...' : '清空所有节点' }}
+          </el-button>
+          <el-button type="primary" @click="refreshNodes" :loading="loadingNodes" :disabled="loadingNodes || clearingNodes">
+            {{ loadingNodes ? '刷新中...' : '刷新节点' }}
+          </el-button>
+        </div>
       </div>
 
       <el-alert v-if="nodeMessage" class="message" :title="nodeMessage" type="info" :closable="false" show-icon />
@@ -124,6 +129,7 @@
 
 <script lang="ts">
 import { defineComponent, onMounted, PropType, ref } from 'vue';
+import { ElMessageBox } from 'element-plus';
 
 type SavedNodeRecord = {
   nodeKey: string;
@@ -192,6 +198,7 @@ export default defineComponent({
   setup() {
     const nodeRecords = ref<SavedNodeRecord[]>([]);
     const loadingNodes = ref(false);
+    const clearingNodes = ref(false);
     const syncingNodeKey = ref('');
     const nodeMessage = ref('');
     const updaterStatus = ref<UpdaterStatus | null>(null);
@@ -253,6 +260,30 @@ export default defineComponent({
         nodeMessage.value = `节点同步失败：${error}`;
       } finally {
         syncingNodeKey.value = '';
+      }
+    };
+
+    const clearNodes = async () => {
+      try {
+        await ElMessageBox.confirm('确认清空所有已保存节点记录？该操作仅影响本机缓存。', '清空确认', {
+          type: 'warning',
+          confirmButtonText: '确认清空',
+          cancelButtonText: '取消'
+        });
+      } catch {
+        return;
+      }
+
+      clearingNodes.value = true;
+      nodeMessage.value = '';
+      try {
+        const result = await window.electronAPI.p2p.clearPeerRecords();
+        nodeMessage.value = `已清空节点记录：${result.cleared} 条`;
+        await refreshNodes();
+      } catch (error) {
+        nodeMessage.value = `清空节点失败：${error}`;
+      } finally {
+        clearingNodes.value = false;
       }
     };
 
@@ -336,6 +367,7 @@ export default defineComponent({
     return {
       nodeRecords,
       loadingNodes,
+      clearingNodes,
       syncingNodeKey,
       nodeMessage,
       updaterStatus,
@@ -345,6 +377,7 @@ export default defineComponent({
       stagingUpdate,
       applyingUpdate,
       refreshNodes,
+      clearNodes,
       syncNode,
       refreshUpdaterStatus,
       checkUpdates,
@@ -380,6 +413,11 @@ export default defineComponent({
   gap: 12px;
   align-items: center;
   margin-bottom: 16px;
+}
+
+.panel-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .subtitle,

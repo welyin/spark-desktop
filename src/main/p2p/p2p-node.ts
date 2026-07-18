@@ -458,6 +458,12 @@ export class P2PNode {
     return await this.orgShare.pullOrganizationsForCurrentRootFromPeer(nodeInfo);
   }
 
+  /** 清空本地保存的节点记录（用于测试页快速重置）。 */
+  async clearSavedPeerRecords(): Promise<{ cleared: number }> {
+    const cleared = await this.peerActivity.clearAllRecords();
+    return { cleared };
+  }
+
   /** 获取用于 UI 诊断展示的节点状态快照。 */
   getLocalNodeInfo(): LocalP2PNodeInfo {
     if (!this.node) {
