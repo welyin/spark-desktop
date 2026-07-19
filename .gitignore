@@ -4,3 +4,4 @@ src/renderer/dist
 .DS_Store
 .vscode
 .secrets
+out/
