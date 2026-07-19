@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { PluginPermission } from './plugin-permissions';
+import type { PluginPermission } from './plugins/permissions';
 import type { DomainSignature } from './identity/root-id';
 
 console.log('[preload.ts] start');

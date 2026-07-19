@@ -1,6 +1,6 @@
 import type { IpcRenderer } from 'electron';
-import type { DBStatus, LevelDBOperation } from './preload';
-import type { DomainSignature } from './identity/root-id';
+import type { DBStatus, LevelDBOperation } from '../preload';
+import type { DomainSignature } from '../identity/root-id';
 
 export type PluginQueryFilter = {
   field: string;

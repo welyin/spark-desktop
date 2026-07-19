@@ -4,7 +4,7 @@ import {
   BASIC_PERMISSIONS,
   normalizeDeclaredPermissions,
   resolveGrantedPermissions
-} from '../../main/plugin-permissions';
+} from '../../main/plugins/permissions';
 
 describe('plugin-permissions', () => {
   it('normalizes declared permissions: filters invalid entries and deduplicates', () => {

@@ -8,8 +8,8 @@ import type { PluginCatalogItem } from '../plugins/catalog';
 import { listPluginCatalog } from '../plugins/catalog';
 import { getPluginTrustConfig } from './trust';
 import type { InstalledPluginState, PluginReleaseManifest, PluginUpdateProbe } from './types';
-import type { PluginPermission } from '../plugin-permissions';
-import { BASIC_PERMISSIONS, normalizeDeclaredPermissions, resolveGrantedPermissions } from '../plugin-permissions';
+import type { PluginPermission } from '../plugins/permissions';
+import { BASIC_PERMISSIONS, normalizeDeclaredPermissions, resolveGrantedPermissions } from '../plugins/permissions';
 
 type PersistedPluginState = {
   installed: Record<string, InstalledPluginState>;

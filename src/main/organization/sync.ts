@@ -1,4 +1,4 @@
-import type { OrganizationMember, OrganizationNodeInfo, OrganizationRecord, OrganizationSyncState } from './types';
+import type { OrganizationMember, OrganizationNodeInfo, OrganizationRecord, OrganizationSyncState, OrganizationTransactionRecord } from './types';
 
 export type OrganizationSyncSection = 'summary' | 'members' | 'member-details' | 'transactions';
 
@@ -7,17 +7,6 @@ export type OrganizationSyncVersions = {
 	membersVersion: number;
 	memberDetailsVersion: number;
 	transactionsVersion: number;
-};
-
-export type OrganizationTransactionRecord = {
-	txId: string;
-	orgId: string;
-	type: 'create' | 'member-add' | 'member-update' | 'member-remove' | 'delete';
-	createdAt: number;
-	actorRootId: string;
-	targetRootId?: string;
-	summary: string;
-	payload?: Record<string, unknown>;
 };
 
 export type OrganizationSyncSnapshot = {

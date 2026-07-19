@@ -1,5 +1,5 @@
 import type { ElectronAPI } from '../main/preload';
-import type { PluginSDK } from '../main/plugin-sdk';
+import type { PluginSDK } from '../main/plugins/sdk';
 
 declare global {
   interface Window {

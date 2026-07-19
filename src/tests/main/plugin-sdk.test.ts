@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createPluginSDK } from '../../main/plugin-sdk';
+import { createPluginSDK } from '../../main/plugins/sdk';
 
 const mockIpc: any = {
   invoke: vi.fn()

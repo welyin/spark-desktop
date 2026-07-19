@@ -2,10 +2,10 @@
   "name": "spark-desktop",
   "version": "0.1.0",
   "description": "Electron desktop client for the Spark project",
-  "main": "src/main/index.cjs",
+  "main": ".vite/build/main.js",
   "scripts": {
     "start": "electron-forge start",
-    "dev": "sh -c 'vite --config vite.config.js --host 127.0.0.1 --port 5199 --strictPort & electron-forge start'",
+    "dev": "electron-forge start",
     "package": "electron-forge package",
     "make": "electron-forge make",
     "build": "electron-forge make",
@@ -24,14 +24,15 @@
     "@libp2p/websockets": "^10.1.16",
     "bip39": "^3.1.0",
     "element-plus": "^2.14.2",
+    "level": "^8.0.1",
     "libp2p": "^3.3.4",
     "tweetnacl": "^1.0.3",
     "vue": "^3.4.0"
   },
   "devDependencies": {
-    "@electron-forge/cli": "^6.3.0",
-    "@electron-forge/maker-zip": "^6.3.0",
-    "@electron-forge/plugin-vite": "latest",
+    "@electron-forge/cli": "^7.11.2",
+    "@electron-forge/maker-zip": "^7.11.2",
+    "@electron-forge/plugin-vite": "^7.11.2",
     "@testing-library/vue": "^8.1.0",
     "@types/electron": "^1.6.10",
     "@types/jsdom": "^28.0.3",
@@ -40,40 +41,9 @@
     "@vue/test-utils": "^2.4.11",
     "electron": "^26.0.0",
     "jsdom": "^19.0.0",
-    "level": "^8.0.0",
-    "ts-node": "^10.9.1",
     "typescript": "^5.1.6",
     "vite": "^5.0.0",
     "vitest": "^0.34.0",
     "vue-tsc": "^1.5.0"
-  },
-  "config": {
-    "forge": {
-      "packagerConfig": {},
-      "makers": [
-        {
-          "name": "@electron-forge/maker-zip",
-          "platforms": [
-            "darwin",
-            "linux",
-            "win32"
-          ]
-        }
-      ],
-      "plugins": [
-        {
-          "name": "@electron-forge/plugin-vite",
-          "config": {
-            "main": {
-              "entry": "src/main/index.ts"
-            },
-            "renderer": {
-              "entry": "src/renderer/index.html",
-              "devContentSecurityPolicy": "default-src 'self' 'unsafe-inline' data:; img-src 'self' data:;"
-            }
-          }
-        }
-      ]
-    }
   }
 }

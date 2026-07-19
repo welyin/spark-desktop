@@ -1,4 +1,4 @@
-import type { PluginPermission } from '../plugin-permissions';
+import type { PluginPermission } from './permissions';
 
 export type PluginCatalogItem = {
   id: string;

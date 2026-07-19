@@ -110,7 +110,7 @@ export function evidenceBatchOperations(entry: EvidenceEntry): LevelDBOperation[
   ];
 }
 
-export async function appendEvidence(db: LevelDB, entry: Omit<EvidenceEntry, 'seq' | 'hash'>): Promise<EvidenceEntry> {
+export async function appendEvidence(db: LevelDB, entry: Omit<EvidenceEntry, 'seq' | 'hash' | 'prevHash'>): Promise<EvidenceEntry> {
   const newEntry = await buildNextEvidenceEntry(db, entry);
   const ops: LevelDBOperation[] = evidenceBatchOperations(newEntry);
   await db.batch(ops);

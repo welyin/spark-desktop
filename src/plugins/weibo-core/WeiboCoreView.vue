@@ -147,7 +147,7 @@
 import { computed, defineComponent, onMounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { initializePluginSDK } from '../../renderer/plugin-sdk-browser';
-import type { PluginSDK } from '../../main/plugin-sdk';
+import type { PluginSDK } from '../../main/plugins/sdk';
 import { buildCommentThread, canPublishPost, validateWeiboText, type WeiboCommentNode } from './model';
 import { WeiboCoreService } from './service';
 

@@ -1,5 +1,16 @@
 export type OrganizationRole = 'admin' | 'member';
 
+export type OrganizationTransactionRecord = {
+	txId: string;
+	orgId: string;
+	type: 'create' | 'member-add' | 'member-update' | 'member-remove' | 'delete';
+	createdAt: number;
+	actorRootId: string;
+	targetRootId?: string;
+	summary: string;
+	payload?: Record<string, unknown>;
+};
+
 export type OrganizationNodeInfo = {
 	peerId?: string;
 	addresses: string[];
