@@ -95,7 +95,17 @@
 
 <script lang="ts">
 import { computed, defineComponent, onMounted, ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
+
+const PERMISSION_LABELS: Record<string, string> = {
+  'storage:read': '读取本域数据',
+  'storage:write': '写入本域数据',
+  'org:read': '读取组织信息',
+  'org:sync': '同步组织数据',
+  'network:broadcast': '网络广播',
+  'proof:verify': '存证核验',
+  'identity:sign': '域身份签名'
+};
 
 export type OpenPluginTabPayload = {
   pluginDomain: string;
@@ -119,6 +129,7 @@ export default defineComponent({
       category: 'foundation' | 'business';
       version: string;
       views: string[];
+      permissions: string[];
       installed: boolean;
       enabled: boolean;
       installedVersion: string | null;
@@ -183,6 +194,20 @@ export default defineComponent({
     };
 
     const installPlugin = async (pluginId: string) => {
+      const target = items.value.find((entry) => entry.id === pluginId);
+      const declared = target?.permissions ?? [];
+      if (declared.length > 0) {
+        const labels = declared.map((permission) => `${PERMISSION_LABELS[permission] ?? permission}（${permission}）`).join('、');
+        try {
+          await ElMessageBox.confirm(
+            `该插件声明以下高级权限：${labels}。安装即视为授权，运行时可越权调用将被系统拦截。`,
+            `授权安装 ${target?.name ?? pluginId}`,
+            { confirmButtonText: '授权并安装', cancelButtonText: '取消', type: 'warning' }
+          );
+        } catch {
+          return; // 用户取消授权
+        }
+      }
       setPluginBusy(pluginId, 'install');
       try {
         await window.electronAPI.pluginMarket.install(pluginId);

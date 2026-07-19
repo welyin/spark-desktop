@@ -5,7 +5,8 @@ import { getPluginCollection } from './db/plugin';
 import { initP2PNode, getP2PNode, isP2PInitialized } from './p2p/index';
 import { registerDomain, unregisterDomain, getDomain, isSystemDomain, isValidPluginDomain } from './domain-registry';
 import { OrganizationService } from './organization/index';
-import { rootIdentityManager } from './identity';
+import { rootIdentityManager, verifyEd25519Signature } from './identity';
+import type { PluginPermission } from './plugin-permissions';
 import { initUpdaterService, getUpdaterService } from './updater';
 import { isKnownPluginDomain, listPluginCatalog } from './plugins/catalog';
 import { getPluginMarketService, initPluginMarketService } from './plugin-market';
@@ -65,6 +66,23 @@ function resolvePluginDomainAccess(event: IpcMainInvokeEvent, requestedDomain?: 
   }
 
   throw new Error('Access denied: plugin domain required');
+}
+
+/**
+ * 校验调用方插件域是否已授予指定权限（权限分级运行时强制点）
+ * 系统域代管调用（携带 pluginDomain 参数）视为可信，直接放行
+ */
+function requirePluginPermission(event: IpcMainInvokeEvent, permission: PluginPermission, requestedDomain?: string): string {
+  const domain = resolvePluginDomainAccess(event, requestedDomain);
+  const caller = getCallerDomain(event);
+  if (caller && isSystemDomain(caller)) {
+    return domain;
+  }
+  const granted = getPluginMarketService().getGrantedPermissionsForDomain(domain);
+  if (!granted.includes(permission)) {
+    throw new Error(`Access denied: permission "${permission}" is not granted for ${domain}`);
+  }
+  return domain;
 }
 
 function registerInvokeHandler(channel: string, handler: Parameters<typeof ipcMain.handle>[1]): void {
@@ -394,13 +412,33 @@ app.whenReady().then(() => {
     };
   });
 
+  // 插件身份签名：以调用方绑定的插件域身份签名，根身份与域私钥均不离开主进程
+  registerInvokeHandler('plugin-identity-sign', (event, payload: string, pluginDomain?: string) => {
+    const domain = requirePluginPermission(event, 'identity:sign', pluginDomain);
+    if (typeof payload !== 'string' || payload.length === 0) {
+      throw new Error('Payload is required');
+    }
+    return rootIdentityManager.signWithDomainIdentity(domain, payload);
+  });
+
+  // 纯验签（Ed25519），不含任何敏感数据，所有已注册域均可调用
+  registerInvokeHandler('plugin-identity-verify', (event, payload: string, signature: string, publicKey: string) => {
+    if (!getCallerDomain(event)) {
+      throw new Error('Access denied: unregistered caller');
+    }
+    if (typeof payload !== 'string' || typeof signature !== 'string' || typeof publicKey !== 'string') {
+      throw new Error('Payload, signature and publicKey are required');
+    }
+    return { valid: verifyEd25519Signature(payload, signature, publicKey) };
+  });
+
   registerInvokeHandler('plugin-org-list-mine', async (event, pluginDomain?: string) => {
-    resolvePluginDomainAccess(event, pluginDomain);
+    requirePluginPermission(event, 'org:read', pluginDomain);
     return await organizationService.listMine();
   });
 
   registerInvokeHandler('plugin-org-sync-now', async (event, orgId: string, pluginDomain?: string) => {
-    const domain = resolvePluginDomainAccess(event, pluginDomain);
+    const domain = requirePluginPermission(event, 'org:sync', pluginDomain);
     if (!orgId || typeof orgId !== 'string') {
       throw new Error('Organization id is required');
     }
@@ -467,27 +505,27 @@ app.whenReady().then(() => {
   });
 
   registerInvokeHandler('plugin-doc-get', async (event, collection: string, id: string, pluginDomain?: string) => {
-    const domain = resolvePluginDomainAccess(event, pluginDomain);
+    const domain = requirePluginPermission(event, 'storage:read', pluginDomain);
     const coll = getPluginCollection(levelDB, domain, collection);
     return await coll.get(id);
   });
 
   registerInvokeHandler('plugin-doc-put', async (event, collection: string, id: string, doc: Record<string, unknown>, pluginDomain?: string) => {
-    const domain = resolvePluginDomainAccess(event, pluginDomain);
+    const domain = requirePluginPermission(event, 'storage:write', pluginDomain);
     const coll = getPluginCollection(levelDB, domain, collection);
     await coll.put(id, doc);
     return { success: true };
   });
 
   registerInvokeHandler('plugin-doc-delete', async (event, collection: string, id: string, pluginDomain?: string) => {
-    const domain = resolvePluginDomainAccess(event, pluginDomain);
+    const domain = requirePluginPermission(event, 'storage:write', pluginDomain);
     const coll = getPluginCollection(levelDB, domain, collection);
     await coll.delete(id);
     return { success: true };
   });
 
   registerInvokeHandler('plugin-doc-query', async (event, collection: string, options: { limit?: number; reverse?: boolean; filter?: Array<{ field: string; value: string | number | boolean; op?: 'eq' | 'startsWith' | 'gt' | 'lt' | 'gte' | 'lte' }> } = {}, pluginDomain?: string) => {
-    const domain = resolvePluginDomainAccess(event, pluginDomain);
+    const domain = requirePluginPermission(event, 'storage:read', pluginDomain);
     const coll = getPluginCollection(levelDB, domain, collection);
     return await coll.query(options);
   });
@@ -575,15 +613,23 @@ app.whenReady().then(() => {
   });
 
   registerInvokeHandler('evidence-head-hash', async (event) => {
-    if (!getCallerDomain(event)) {
+    const caller = getCallerDomain(event);
+    if (!caller) {
       throw new Error('Access denied: unregistered caller');
+    }
+    if (isValidPluginDomain(caller)) {
+      requirePluginPermission(event, 'proof:verify');
     }
     return { hash: await getEvidenceHeadHash(levelDB) };
   });
 
   registerInvokeHandler('evidence-verify', async (event) => {
-    if (!getCallerDomain(event)) {
+    const caller = getCallerDomain(event);
+    if (!caller) {
       throw new Error('Access denied: unregistered caller');
+    }
+    if (isValidPluginDomain(caller)) {
+      requirePluginPermission(event, 'proof:verify');
     }
     return { valid: await verifyEvidenceChain(levelDB), height: await getEvidenceHeight(levelDB) };
   });
@@ -618,6 +664,10 @@ app.whenReady().then(() => {
   registerInvokeHandler('p2p-broadcast', async (event, topic: string, message: any) => {
     const targetDomain = message?.domain ?? null;
     requireAccess(event, targetDomain);
+    const caller = getCallerDomain(event);
+    if (caller && isValidPluginDomain(caller)) {
+      requirePluginPermission(event, 'network:broadcast');
+    }
     if (!isP2PInitialized()) {
       throw new Error('P2P node not initialized. Open database first.');
     }

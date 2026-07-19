@@ -8,6 +8,8 @@ import type { PluginCatalogItem } from '../plugins/catalog';
 import { listPluginCatalog } from '../plugins/catalog';
 import { getPluginTrustConfig } from './trust';
 import type { InstalledPluginState, PluginReleaseManifest, PluginUpdateProbe } from './types';
+import type { PluginPermission } from '../plugin-permissions';
+import { BASIC_PERMISSIONS, normalizeDeclaredPermissions, resolveGrantedPermissions } from '../plugin-permissions';
 
 type PersistedPluginState = {
   installed: Record<string, InstalledPluginState>;
@@ -98,7 +100,29 @@ export class PluginMarketService {
 
   async initialize(): Promise<void> {
     this.state = await readJsonFile<PersistedPluginState>(this.stateFilePath, { installed: {} });
+    await this.backfillGrantedPermissions();
     await this.reconcileBundledInstalledState();
+  }
+
+  /** 兼容旧版安装状态：缺失 grantedPermissions 时按目录声明回填 */
+  private async backfillGrantedPermissions(): Promise<void> {
+    let changed = false;
+    for (const [pluginId, installed] of Object.entries(this.state.installed)) {
+      if (Array.isArray(installed.grantedPermissions)) {
+        continue;
+      }
+      const item = listPluginCatalog().find((catalog) => catalog.id === pluginId);
+      installed.grantedPermissions = item ? resolveGrantedPermissions(item.permissions) : [...BASIC_PERMISSIONS];
+      changed = true;
+    }
+    if (changed) {
+      await this.persist();
+    }
+  }
+
+  private resolveDeclaredPermissions(item: PluginCatalogItem, manifest?: PluginReleaseManifest): PluginPermission[] {
+    const declared = manifest?.permissions ? normalizeDeclaredPermissions(manifest.permissions) : item.permissions;
+    return resolveGrantedPermissions(declared);
   }
 
   private async persist(): Promise<void> {
@@ -172,7 +196,8 @@ export class PluginMarketService {
       sha256: 'bundled-dev-source',
       size: 0,
       installedAt: 0,
-      enabled: true
+      enabled: true,
+      grantedPermissions: resolveGrantedPermissions(item.permissions)
     };
   }
 
@@ -223,7 +248,8 @@ export class PluginMarketService {
             sha256: digest,
             size,
             installedAt: Date.now(),
-            enabled: true
+            enabled: true,
+            grantedPermissions: this.resolveDeclaredPermissions(item, manifest)
           };
           this.updateProbes[item.id] = {
             pluginId: item.id,
@@ -254,7 +280,8 @@ export class PluginMarketService {
         sha256: 'bundled-dev-source',
         size: 0,
         installedAt: Date.now(),
-        enabled: true
+        enabled: true,
+        grantedPermissions: resolveGrantedPermissions(item.permissions)
       };
       this.updateProbes[item.id] = {
         pluginId: item.id,
@@ -382,7 +409,8 @@ export class PluginMarketService {
       sha256: downloaded.sha256,
       size: downloaded.size,
       installedAt: Date.now(),
-      enabled: true
+      enabled: true,
+      grantedPermissions: this.resolveDeclaredPermissions(item, manifest)
     };
 
     this.state.installed[pluginId] = installedState;
@@ -423,6 +451,19 @@ export class PluginMarketService {
     this.state.installed[pluginId] = installed;
     await this.persist();
     return installed;
+  }
+
+  /**
+   * 查询指定插件域已授权的权限清单（运行时 IPC 权限校验用）
+   * 未安装或未知插件域仅返回基础权限
+   */
+  getGrantedPermissionsForDomain(domain: string): PluginPermission[] {
+    const item = listPluginCatalog().find((catalog) => catalog.domain === domain);
+    if (!item) {
+      return [...BASIC_PERMISSIONS];
+    }
+    const installed = this.state.installed[item.id] ?? this.buildDevSourceInstalledState(item);
+    return installed?.grantedPermissions ?? resolveGrantedPermissions(item.permissions);
   }
 
   listMarket(): PluginMarketItem[] {

@@ -27,6 +27,22 @@ describe('createPluginSDK', () => {
     expect(typeof sdk.db.get).toBe('function');
     expect(typeof sdk.evidence.headHash).toBe('function');
     expect(typeof sdk.p2p.start).toBe('function');
+    expect(typeof sdk.identity.sign).toBe('function');
+    expect(typeof sdk.identity.verify).toBe('function');
+  });
+
+  it('wires identity.sign/verify to dedicated IPC channels', async () => {
+    mockIpc.invoke.mockResolvedValueOnce({ domain: 'plugin:test' });
+    const sdk = await createPluginSDK(mockIpc);
+
+    mockIpc.invoke.mockResolvedValueOnce({ domain: 'plugin:test', signature: 'sig' });
+    await sdk.identity.sign('payload-1');
+    expect(mockIpc.invoke).toHaveBeenLastCalledWith('plugin-identity-sign', 'payload-1');
+
+    mockIpc.invoke.mockResolvedValueOnce({ valid: true });
+    const result = await sdk.identity.verify('payload-1', 'sig', 'pk');
+    expect(mockIpc.invoke).toHaveBeenLastCalledWith('plugin-identity-verify', 'payload-1', 'sig', 'pk');
+    expect(result).toEqual({ valid: true });
   });
 
   it('should not accept caller-supplied domain (domain comes from main process only)', async () => {

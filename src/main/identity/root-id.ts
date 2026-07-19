@@ -69,6 +69,14 @@ export type DerivedDomainIdentity = {
   derivationPath: string;
 };
 
+export type DomainSignature = {
+  domain: string;
+  domainId: string;
+  publicKey: string;
+  signature: string;
+  payloadHash: string;
+};
+
 function parsePath(pathValue: string): number[] {
   if (!pathValue.startsWith('m/')) {
     throw new Error(`Invalid derivation path: ${pathValue}`);
@@ -121,6 +129,23 @@ function deriveSlip10Path(seed: Buffer, derivationPath: string): Slip10Node {
 
 function sha256Hex(data: Buffer | string): string {
   return createHash('sha256').update(data).digest('hex');
+}
+
+/**
+ * 校验 Ed25519 分离签名（纯函数，无需解锁身份，供任意验签方使用）
+ */
+export function verifyEd25519Signature(payload: string | Buffer, signatureBase64: string, publicKeyBase64: string): boolean {
+  try {
+    const bytes = Buffer.isBuffer(payload) ? payload : Buffer.from(payload, 'utf8');
+    const signature = Buffer.from(signatureBase64, 'base64');
+    const publicKey = Buffer.from(publicKeyBase64, 'base64');
+    if (publicKey.length !== nacl.sign.publicKeyLength || signature.length !== nacl.sign.signatureLength) {
+      return false;
+    }
+    return nacl.sign.detached.verify(new Uint8Array(bytes), new Uint8Array(signature), new Uint8Array(publicKey));
+  } catch {
+    return false;
+  }
 }
 
 function encryptRootSecret(password: string, secret: EncryptedRootSecret): Pick<StoredRootIdentity, 'kdf' | 'encryption'> {
@@ -272,6 +297,39 @@ export class RootIdentityManager {
   }
 
   deriveDomainIdentity(domain: string): DerivedDomainIdentity {
+    const { keypair, derivationPath } = this.deriveDomainKeypair(domain);
+    const domainPublicKey = Buffer.from(keypair.publicKey);
+
+    return {
+      domain,
+      domainId: sha256Hex(domainPublicKey),
+      publicKey: domainPublicKey.toString('base64'),
+      derivationPath
+    };
+  }
+
+  /**
+   * 使用域身份私钥对数据签名
+   *
+   * 安全说明：域密钥由根种子即时派生，仅存在于本方法调用栈内，
+   * 不持久化、不返回给调用方；调用方只能拿到签名与公钥。
+   */
+  signWithDomainIdentity(domain: string, payload: string | Buffer): DomainSignature {
+    const { keypair } = this.deriveDomainKeypair(domain);
+    const bytes = Buffer.isBuffer(payload) ? payload : Buffer.from(payload, 'utf8');
+    const signature = nacl.sign.detached(new Uint8Array(bytes), keypair.secretKey);
+    const publicKey = Buffer.from(keypair.publicKey);
+
+    return {
+      domain,
+      domainId: sha256Hex(publicKey),
+      publicKey: publicKey.toString('base64'),
+      signature: Buffer.from(signature).toString('base64'),
+      payloadHash: sha256Hex(bytes)
+    };
+  }
+
+  private deriveDomainKeypair(domain: string): { keypair: nacl.SignKeyPair; derivationPath: string } {
     const unlocked = this.requireUnlocked();
     if (!domain || domain.trim().length === 0) {
       throw new Error('Domain is required');
@@ -280,17 +338,11 @@ export class RootIdentityManager {
     const digest = createHash('sha256').update(domain, 'utf8').digest();
     const idxA = digest.readUInt32BE(0) & 0x7fffffff;
     const idxB = digest.readUInt32BE(4) & 0x7fffffff;
-    const domainPath = `${unlocked.derivationPath}/${idxA}'/${idxB}'`;
-    const domainNode = deriveSlip10Path(unlocked.seed, domainPath);
-    const domainKeypair = nacl.sign.keyPair.fromSeed(new Uint8Array(domainNode.key));
-    const domainPublicKey = Buffer.from(domainKeypair.publicKey);
+    const derivationPath = `${unlocked.derivationPath}/${idxA}'/${idxB}'`;
+    const domainNode = deriveSlip10Path(unlocked.seed, derivationPath);
+    const keypair = nacl.sign.keyPair.fromSeed(new Uint8Array(domainNode.key));
 
-    return {
-      domain,
-      domainId: sha256Hex(domainPublicKey),
-      publicKey: domainPublicKey.toString('base64'),
-      derivationPath: domainPath
-    };
+    return { keypair, derivationPath };
   }
 
   private async readStoredIdentity(): Promise<StoredRootIdentity | null> {

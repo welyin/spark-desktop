@@ -1,3 +1,5 @@
+import type { PluginPermission } from '../plugin-permissions';
+
 export type PluginCatalogItem = {
   id: string;
   domain: string;
@@ -6,6 +8,8 @@ export type PluginCatalogItem = {
   category: 'foundation' | 'business';
   version: string;
   views: string[];
+  /** 插件声明的权限清单（基础权限无需声明，安装时向用户展示并授权） */
+  permissions: PluginPermission[];
   package: {
     updateManifestUrl: string;
     signatureUrl: string;
@@ -23,6 +27,7 @@ const CATALOG: PluginCatalogItem[] = [
     category: 'foundation',
     version: '0.1.0',
     views: ['default'],
+    permissions: ['org:sync'],
     package: {
       updateManifestUrl: 'https://github.com/welyin/spark-desktop/releases/latest/download/spark-plugin-weibo-core-manifest.json',
       signatureUrl: 'https://github.com/welyin/spark-desktop/releases/latest/download/spark-plugin-weibo-core-manifest.sig',
@@ -33,7 +38,7 @@ const CATALOG: PluginCatalogItem[] = [
 ];
 
 export function listPluginCatalog(): PluginCatalogItem[] {
-  return CATALOG.map((item) => ({ ...item, views: [...item.views], package: { ...item.package } }));
+  return CATALOG.map((item) => ({ ...item, views: [...item.views], permissions: [...item.permissions], package: { ...item.package } }));
 }
 
 export function isKnownPluginDomain(domain: string): boolean {

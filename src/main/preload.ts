@@ -1,4 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type { PluginPermission } from './plugin-permissions';
+import type { DomainSignature } from './identity/root-id';
 
 console.log('[preload.ts] start');
 
@@ -60,6 +62,7 @@ export type ElectronAPI = {
       category: 'foundation' | 'business';
       version: string;
       views: string[];
+      permissions: PluginPermission[];
       package: {
         updateManifestUrl: string;
         signatureUrl: string;
@@ -68,6 +71,8 @@ export type ElectronAPI = {
       };
     }>>;
     currentRoot: () => Promise<{ unlocked: boolean; rootId: string | null }>;
+    identitySign: (payload: string, pluginDomain?: string) => Promise<DomainSignature>;
+    identityVerify: (payload: string, signature: string, publicKey: string) => Promise<{ valid: boolean }>;
     syncOrganizationData: (orgId: string, pluginDomain?: string) => Promise<{ orgId: string; attempted: number; pulled: number }>;
     listMineOrganizations: (pluginDomain?: string) => Promise<Array<{
       orgId: string;
@@ -121,6 +126,7 @@ export type ElectronAPI = {
       category: 'foundation' | 'business';
       version: string;
       views: string[];
+      permissions: PluginPermission[];
       package: {
         updateManifestUrl: string;
         signatureUrl: string;
@@ -370,6 +376,9 @@ const api = {
       ipcRenderer.invoke('plugin-open-view', pluginDomain, pluginView),
     listCatalog: () => ipcRenderer.invoke('plugin-list-catalog'),
     currentRoot: () => ipcRenderer.invoke('plugin-current-root'),
+    identitySign: (payload: string, pluginDomain?: string) => ipcRenderer.invoke('plugin-identity-sign', payload, pluginDomain),
+    identityVerify: (payload: string, signature: string, publicKey: string) =>
+      ipcRenderer.invoke('plugin-identity-verify', payload, signature, publicKey),
     syncOrganizationData: (orgId: string, pluginDomain?: string) => ipcRenderer.invoke('plugin-org-sync-now', orgId, pluginDomain),
     listMineOrganizations: (pluginDomain?: string) => ipcRenderer.invoke('plugin-org-list-mine', pluginDomain),
     docGet: (collection: string, id: string, pluginDomain?: string) => ipcRenderer.invoke('plugin-doc-get', collection, id, pluginDomain),

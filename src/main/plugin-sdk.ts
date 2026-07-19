@@ -1,5 +1,6 @@
 import type { IpcRenderer } from 'electron';
 import type { DBStatus, LevelDBOperation } from './preload';
+import type { DomainSignature } from './identity/root-id';
 
 export type PluginQueryFilter = {
   field: string;
@@ -74,6 +75,16 @@ export interface PluginDocAPI {
   }>;
 }
 
+/**
+ * 插件身份能力
+ * 签名使用调用方插件域身份（域私钥永不离开主进程），根身份不暴露；
+ * 验签为纯函数，可用于校验其他成员在对应域内的签名
+ */
+export interface PluginIdentityAPI {
+  sign: (payload: string) => Promise<DomainSignature>;
+  verify: (payload: string, signature: string, publicKey: string) => Promise<{ valid: boolean }>;
+}
+
 export interface PluginSDK {
   /** 当前插件的域身份，由主进程绑定，渲染端不可修改 */
   domain: string;
@@ -82,6 +93,7 @@ export interface PluginSDK {
   p2p: PluginP2PAPI;
   runtime: PluginRuntimeAPI;
   docs: PluginDocAPI;
+  identity: PluginIdentityAPI;
 }
 
 /**
@@ -141,6 +153,11 @@ export async function createPluginSDK(ipcRenderer: IpcRenderer): Promise<PluginS
       delete: (collection: string, id: string) => ipcRenderer.invoke('plugin-doc-delete', collection, id),
       query: (collection: string, options: PluginDocQueryOptions = {}) =>
         ipcRenderer.invoke('plugin-doc-query', collection, options)
+    },
+    identity: {
+      sign: (payload: string) => ipcRenderer.invoke('plugin-identity-sign', payload),
+      verify: (payload: string, signature: string, publicKey: string) =>
+        ipcRenderer.invoke('plugin-identity-verify', payload, signature, publicKey)
     }
   };
 }

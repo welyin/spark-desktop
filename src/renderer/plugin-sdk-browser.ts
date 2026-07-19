@@ -76,6 +76,8 @@ export async function initializePluginSDK(): Promise<PluginSDK> {
     p2p: electronAPI.p2p,
     runtime: {
       currentRoot: () => electronAPI.plugin.currentRoot(),
+      syncOrganizationData: (orgId: string) =>
+        electronAPI.plugin.syncOrganizationData(orgId, needsExplicitPluginDomain ? domain : undefined),
       listMineOrganizations: () =>
         electronAPI.plugin.listMineOrganizations(needsExplicitPluginDomain ? domain : undefined)
     },
@@ -88,6 +90,12 @@ export async function initializePluginSDK(): Promise<PluginSDK> {
         electronAPI.plugin.docDelete(collection, id, needsExplicitPluginDomain ? domain : undefined),
       query: (collection: string, options = {}) =>
         electronAPI.plugin.docQuery(collection, options, needsExplicitPluginDomain ? domain : undefined)
+    },
+    identity: {
+      sign: (payload: string) =>
+        electronAPI.plugin.identitySign(payload, needsExplicitPluginDomain ? domain : undefined),
+      verify: (payload: string, signature: string, publicKey: string) =>
+        electronAPI.plugin.identityVerify(payload, signature, publicKey)
     }
   };
 
