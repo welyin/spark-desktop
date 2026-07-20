@@ -63,16 +63,16 @@ npm run build:all
 详细文档已迁移至 [GitHub Wiki](https://github.com/welyin/spark-desktop/wiki)，主要入口：
 
 - [项目简介](https://github.com/welyin/spark-desktop/wiki/project_intro)
-- [产品设计文档](https://github.com/welyin/spark-desktop/wiki/design/design_overview)
-- [插件开发指南](https://github.com/welyin/spark-desktop/wiki/dev/plugin_development)
-- [开发计划](https://github.com/welyin/spark-desktop/wiki/dev/development_plan)
-- [术语表](https://github.com/welyin/spark-desktop/wiki/design/glossary)
+- [产品设计文档](https://github.com/welyin/spark-desktop/wiki/design_overview)
+- [插件开发指南](https://github.com/welyin/spark-desktop/wiki/plugin_development)
+- [开发计划](https://github.com/welyin/spark-desktop/wiki/development_plan)
+- [术语表](https://github.com/welyin/spark-desktop/wiki/glossary)
 
 ## 插件开发
 
 星火采用「核心骨架 + 插件应用」的开放架构，所有业务功能均可通过插件扩展。插件基于 Node.js + Vue 3 开发，运行于独立沙箱环境，通过标准化 SDK 调用底层能力。
 
-详细开发规范请参考 [插件开发文档](https://github.com/welyin/spark-desktop/wiki/dev/plugin_development)。
+详细开发规范请参考 [插件开发文档](https://github.com/welyin/spark-desktop/wiki/plugin_development)。
 
 ## 参与贡献
 
