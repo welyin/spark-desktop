@@ -54,7 +54,7 @@
               </template>
               <el-form label-position="top">
                 <el-form-item label="域名">
-                  <el-input v-model="domainInput" placeholder="plugin:demo" />
+                  <el-input v-model="domainInput" placeholder="plugin:weibo-core" />
                 </el-form-item>
                 <el-button type="primary" @click="deriveDomainIdentity">派生域身份</el-button>
               </el-form>
@@ -122,7 +122,7 @@ export default defineComponent({
   setup(_, { emit }) {
     const rootStatus = ref<RootStatus>({ initialized: false, unlocked: false, rootId: null });
     const message = ref('');
-    const domainInput = ref('plugin:demo');
+    const domainInput = ref('plugin:weibo-core');
     const derivedDomain = ref<DerivedDomain | null>(null);
     const payloadInput = ref('hello-root-id');
     const signatureResult = ref<SignatureResult | null>(null);
