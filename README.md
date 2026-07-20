@@ -115,7 +115,7 @@ npm run build:all
 
 * 插件基于 Node.js + Vue 3 开发，运行于独立沙箱环境，严格限制权限范围
 * 骨架向插件开放标准化 API：数据读写、社区广播、身份校验、UI 界面注入
-* 详细开发规范请参考 [插件开发文档](./docs/plugin-dev.md)
+* 详细开发规范请参考 [插件开发文档](https://github.com/welyin/spark-desktop/wiki/dev/plugin-development)
 
 ### 组织基础插件约束（新增）
 
@@ -316,7 +316,7 @@ npm run plugin:package:weibo
 * 开发适配不同场景的功能插件
 * 参与文档翻译、使用教程编写
 
-详细规范请阅读 [贡献指南](./CONTRIBUTING.md)。
+详细规范请阅读 [贡献指南](https://github.com/welyin/spark-desktop/blob/main/CONTRIBUTING.md)。
 
 ## 开源协议
 
