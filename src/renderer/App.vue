@@ -63,8 +63,7 @@
 
 <script lang="ts">
 import { computed, defineComponent, onMounted, ref, shallowRef, type Component } from 'vue';
-import { getPluginView, registerPluginView } from './plugin-view-registry';
-import WeiboCoreView from '../plugins/weibo-core/WeiboCoreView.vue';
+import { getPluginView } from './plugin-view-registry';
 import AffairsPage from './pages/AffairsPage.vue';
 import OrgPage from './pages/OrgPage.vue';
 import AppsPage, { type OpenPluginTabPayload } from './pages/AppsPage.vue';
@@ -103,8 +102,6 @@ export default defineComponent({
     MinePage
   },
   setup() {
-    registerPluginView('plugin:weibo-core', 'default', WeiboCoreView);
-
     const search = new URLSearchParams(window.location.search);
     const pluginWindowDomain = search.get('pluginDomain');
     const pluginWindowView = search.get('pluginView') ?? 'default';
