@@ -1,5 +1,7 @@
 import { DocumentCollection } from '../db/collection';
 import type { LevelDB } from '../db/base';
+import type { CollectionSchemaDeclaration } from '../db/schema';
+import { getCollectionSchema } from '../db/schema';
 import { applyRemoteUpdate, getMeta } from '../db/sync';
 
 type PluginDocSyncItem = {
@@ -8,6 +10,7 @@ type PluginDocSyncItem = {
   id: string;
   payload: Record<string, unknown>;
   meta: { vv: Record<string, number>; ts: number; nodeId?: string };
+  schema?: CollectionSchemaDeclaration;
 };
 
 const PLUGIN_DOC_PREFIX = 'doc:plugin:';
@@ -92,6 +95,9 @@ export async function collectSyncablePluginDocsByOrg(db: LevelDB, orgId: string)
       continue;
     }
 
+    // 随文档携带集合策略声明，供接收方按相同策略应用（append-only / lww）
+    const schemaRecord = await getCollectionSchema(db, keyInfo.domain, keyInfo.collection);
+
     results.push({
       domain: keyInfo.domain,
       collection: keyInfo.collection,
@@ -101,7 +107,16 @@ export async function collectSyncablePluginDocsByOrg(db: LevelDB, orgId: string)
         vv: meta.vv,
         ts: meta.ts,
         nodeId: typeof meta.nodeId === 'string' ? meta.nodeId : undefined
-      }
+      },
+      ...(schemaRecord
+        ? {
+            schema: {
+              syncStrategy: schemaRecord.syncStrategy,
+              governance: schemaRecord.governance,
+              enableEvidence: schemaRecord.enableEvidence
+            } as CollectionSchemaDeclaration
+          }
+        : {})
     });
   }
 
@@ -112,10 +127,7 @@ export async function applyPluginDocSyncItems(db: LevelDB, items: PluginDocSyncI
   let applied = 0;
 
   for (const item of items) {
-    const coll = new DocumentCollection(db, item.domain, item.collection, {
-      enableEvidence: true,
-      indexedFields: []
-    });
+    const coll = new DocumentCollection(db, item.domain, item.collection, {});
 
     await applyRemoteUpdate(
       db,
@@ -124,7 +136,8 @@ export async function applyPluginDocSyncItems(db: LevelDB, items: PluginDocSyncI
       item.collection,
       item.id,
       item.payload,
-      item.meta
+      item.meta,
+      { schema: item.schema }
     );
 
     applied += 1;

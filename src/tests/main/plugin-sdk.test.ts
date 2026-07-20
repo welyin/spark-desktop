@@ -31,6 +31,25 @@ describe('createPluginSDK', () => {
     expect(typeof sdk.identity.verify).toBe('function');
   });
 
+  it('wires docs.defineCollection to the declare IPC channel', async () => {
+    mockIpc.invoke.mockResolvedValueOnce({ domain: 'plugin:test' });
+    const sdk = await createPluginSDK(mockIpc);
+
+    mockIpc.invoke.mockResolvedValueOnce({
+      collection: 'votes',
+      syncStrategy: 'append-only',
+      governance: true,
+      enableEvidence: true
+    });
+    const declared = await sdk.docs.defineCollection('votes', { syncStrategy: 'append-only', governance: true });
+
+    expect(mockIpc.invoke).toHaveBeenLastCalledWith('plugin-doc-declare-collection', 'votes', {
+      syncStrategy: 'append-only',
+      governance: true
+    });
+    expect(declared).toMatchObject({ collection: 'votes', syncStrategy: 'append-only', governance: true });
+  });
+
   it('wires identity.sign/verify to dedicated IPC channels', async () => {
     mockIpc.invoke.mockResolvedValueOnce({ domain: 'plugin:test' });
     const sdk = await createPluginSDK(mockIpc);

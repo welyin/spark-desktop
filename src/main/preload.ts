@@ -98,6 +98,16 @@ export type ElectronAPI = {
       adminCount: number;
     }>>;
     docGet: <T extends Record<string, unknown> = Record<string, unknown>>(collection: string, id: string, pluginDomain?: string) => Promise<T | null>;
+    docDeclareCollection: (
+      collection: string,
+      schema: { syncStrategy: 'append-only' | 'lww'; governance?: boolean; enableEvidence?: boolean },
+      pluginDomain?: string
+    ) => Promise<{
+      collection: string;
+      syncStrategy: 'append-only' | 'lww';
+      governance: boolean;
+      enableEvidence: boolean;
+    }>;
     docPut: (collection: string, id: string, doc: Record<string, unknown>, pluginDomain?: string) => Promise<{ success: boolean }>;
     docDelete: (collection: string, id: string, pluginDomain?: string) => Promise<{ success: boolean }>;
     docQuery: <T extends Record<string, unknown> = Record<string, unknown>>(
@@ -382,6 +392,11 @@ const api = {
     syncOrganizationData: (orgId: string, pluginDomain?: string) => ipcRenderer.invoke('plugin-org-sync-now', orgId, pluginDomain),
     listMineOrganizations: (pluginDomain?: string) => ipcRenderer.invoke('plugin-org-list-mine', pluginDomain),
     docGet: (collection: string, id: string, pluginDomain?: string) => ipcRenderer.invoke('plugin-doc-get', collection, id, pluginDomain),
+    docDeclareCollection: (
+      collection: string,
+      schema: { syncStrategy: 'append-only' | 'lww'; governance?: boolean; enableEvidence?: boolean },
+      pluginDomain?: string
+    ) => ipcRenderer.invoke('plugin-doc-declare-collection', collection, schema, pluginDomain),
     docPut: (collection: string, id: string, doc: Record<string, unknown>, pluginDomain?: string) =>
       ipcRenderer.invoke('plugin-doc-put', collection, id, doc, pluginDomain),
     docDelete: (collection: string, id: string, pluginDomain?: string) =>

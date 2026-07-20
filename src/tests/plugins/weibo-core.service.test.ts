@@ -6,12 +6,36 @@ function createMockSdk() {
     docs: {
       get: vi.fn(),
       put: vi.fn(),
-      query: vi.fn()
+      query: vi.fn(),
+      defineCollection: vi.fn().mockResolvedValue({
+        collection: 'mock',
+        syncStrategy: 'append-only',
+        governance: false,
+        enableEvidence: true
+      })
     }
   } as any;
 }
 
 describe('weibo-core service', () => {
+  it('declares collection sync strategies before writing (lww config, append-only content)', async () => {
+    const sdk = createMockSdk();
+    sdk.docs.get.mockResolvedValueOnce(null);
+
+    const service = new WeiboCoreService(sdk);
+    await service.ensureOrgConfig('org-1', 'root-admin');
+    await service.createPost('org-1', 'root-admin', 'hello', 'admin');
+
+    const declared = sdk.docs.defineCollection.mock.calls.map((call: any[]) => [call[0], call[1]]);
+    expect(declared).toEqual([
+      [WEIBO_COLLECTIONS.orgConfig, { syncStrategy: 'lww' }],
+      [WEIBO_COLLECTIONS.posts, { syncStrategy: 'append-only' }],
+      [WEIBO_COLLECTIONS.comments, { syncStrategy: 'append-only' }]
+    ]);
+    // 声明幂等：第二次写入不再重复声明
+    expect(sdk.docs.defineCollection).toHaveBeenCalledTimes(3);
+  });
+
   it('sets creator as super admin on first org config', async () => {
     const sdk = createMockSdk();
     sdk.docs.get.mockResolvedValueOnce(null);

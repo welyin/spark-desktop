@@ -14,7 +14,8 @@ const mockElectronApi = {
     docGet: vi.fn(),
     docPut: vi.fn(),
     docDelete: vi.fn(),
-    docQuery: vi.fn()
+    docQuery: vi.fn(),
+    docDeclareCollection: vi.fn()
   }
 };
 
@@ -70,6 +71,29 @@ describe('initializePluginSDK', () => {
     const result = await sdk.identity.verify('payload-1', 'sig', 'pk');
     expect(mockElectronApi.plugin.identityVerify).toHaveBeenCalledWith('payload-1', 'sig', 'pk');
     expect(result).toEqual({ valid: true });
+  });
+
+  it('exposes docs.defineCollection and forwards schema with plugin domain fallback', async () => {
+    mockElectronApi.getDomain.mockResolvedValueOnce({ domain: 'system' });
+    window.history.replaceState({}, '', '/?pluginDomain=plugin:weibo-core');
+    mockElectronApi.plugin.docDeclareCollection.mockResolvedValueOnce({
+      collection: 'votes',
+      syncStrategy: 'append-only',
+      governance: false,
+      enableEvidence: true
+    });
+
+    const { initializePluginSDK } = await import('../../renderer/plugin-sdk-browser');
+    const sdk = await initializePluginSDK();
+
+    const declared = await sdk.docs.defineCollection('votes', { syncStrategy: 'append-only' });
+
+    expect(mockElectronApi.plugin.docDeclareCollection).toHaveBeenCalledWith(
+      'votes',
+      { syncStrategy: 'append-only' },
+      'plugin:weibo-core'
+    );
+    expect(declared).toMatchObject({ collection: 'votes', syncStrategy: 'append-only' });
   });
 
   it('identity.sign omits pluginDomain when window domain is bound', async () => {

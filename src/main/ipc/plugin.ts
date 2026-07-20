@@ -1,5 +1,6 @@
 import { levelDB } from '../db';
-import { getPluginCollection } from '../db/plugin';
+import { getDeclaredPluginCollection, getPluginCollection } from '../db/plugin';
+import { CollectionSchemaDeclaration, declareCollectionSchema } from '../db/schema';
 import { isValidPluginDomain } from '../domain-registry';
 import { rootIdentityManager, verifyEd25519Signature } from '../identity';
 import { isP2PInitialized, getP2PNode } from '../p2p/index';
@@ -140,16 +141,28 @@ export function registerPluginHandlers(): void {
     return await coll.get(id);
   });
 
+  // 集合同步策略声明：syncStrategy 必填（append-only 默认 / lww 显式），声明后不可变更
+  registerInvokeHandler('plugin-doc-declare-collection', async (event, collection: string, schema: CollectionSchemaDeclaration, pluginDomain?: string) => {
+    const domain = requirePluginPermission(event, 'storage:write', pluginDomain);
+    const record = await declareCollectionSchema(levelDB, domain, collection, schema);
+    return {
+      collection: record.collection,
+      syncStrategy: record.syncStrategy,
+      governance: record.governance,
+      enableEvidence: record.enableEvidence
+    };
+  });
+
   registerInvokeHandler('plugin-doc-put', async (event, collection: string, id: string, doc: Record<string, unknown>, pluginDomain?: string) => {
     const domain = requirePluginPermission(event, 'storage:write', pluginDomain);
-    const coll = getPluginCollection(levelDB, domain, collection);
+    const { coll } = await getDeclaredPluginCollection(levelDB, domain, collection);
     await coll.put(id, doc);
     return { success: true };
   });
 
   registerInvokeHandler('plugin-doc-delete', async (event, collection: string, id: string, pluginDomain?: string) => {
     const domain = requirePluginPermission(event, 'storage:write', pluginDomain);
-    const coll = getPluginCollection(levelDB, domain, collection);
+    const { coll } = await getDeclaredPluginCollection(levelDB, domain, collection);
     await coll.delete(id);
     return { success: true };
   });

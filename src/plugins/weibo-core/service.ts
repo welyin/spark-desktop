@@ -7,6 +7,17 @@ export const WEIBO_COLLECTIONS = {
   comments: 'weibo_comments'
 } as const;
 
+/**
+ * 集合同步策略声明（设计文档 V2 §4.3.4，写入前必须声明）：
+ * - orgConfig：组织级配置状态，可被后续管理员调整覆盖，显式声明 lww
+ * - posts / comments：内容记录，仅追加、不覆盖、不删除，使用默认 append-only（自动链式存证）
+ */
+const WEIBO_COLLECTION_SCHEMAS = {
+  [WEIBO_COLLECTIONS.orgConfig]: { syncStrategy: 'lww' },
+  [WEIBO_COLLECTIONS.posts]: { syncStrategy: 'append-only' },
+  [WEIBO_COLLECTIONS.comments]: { syncStrategy: 'append-only' }
+} as const;
+
 export type WeiboOrgConfig = {
   orgId: string;
   superAdminRootId: string;
@@ -21,9 +32,22 @@ function newId(prefix: string): string {
 }
 
 export class WeiboCoreService {
+  private collectionsReady: Promise<void> | null = null;
+
   constructor(private readonly sdk: PluginSDK) {}
 
+  /** 声明本插件全部集合的同步策略（幂等，重复声明与首次一致即可） */
+  private ensureCollectionsDeclared(): Promise<void> {
+    this.collectionsReady ??= (async () => {
+      for (const [collection, schema] of Object.entries(WEIBO_COLLECTION_SCHEMAS)) {
+        await this.sdk.docs.defineCollection(collection, schema);
+      }
+    })();
+    return this.collectionsReady;
+  }
+
   async ensureOrgConfig(orgId: string, rootId: string): Promise<WeiboOrgConfig> {
+    await this.ensureCollectionsDeclared();
     const existing = await this.sdk.docs.get<WeiboOrgConfig>(WEIBO_COLLECTIONS.orgConfig, orgId);
     if (existing) {
       return existing;
@@ -45,6 +69,7 @@ export class WeiboCoreService {
       throw new Error('Only organization admins can publish posts');
     }
 
+    await this.ensureCollectionsDeclared();
     const post: WeiboPost = {
       id: newId('post'),
       orgId,
@@ -58,6 +83,7 @@ export class WeiboCoreService {
   }
 
   async createComment(orgId: string, postId: string, rootId: string, content: string, parentCommentId?: string): Promise<WeiboComment> {
+    await this.ensureCollectionsDeclared();
     const comment: WeiboComment = {
       id: newId('comment'),
       orgId,

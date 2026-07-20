@@ -1,4 +1,5 @@
 import { LevelDBOperation, LevelDB } from './base';
+import { CollectionSchemaDeclaration, ResolvedCollectionPolicy, isSyncStrategy, resolveCollectionPolicy } from './schema';
 import {
   buildEvidenceDataHash,
   buildEvidenceMetaHash,
@@ -11,7 +12,8 @@ import {
  * 数据同步辅助模块：
  * - 提供 meta key 的生成与读写
  * - 提供版本向量比较与 LWW 决策
- * - 提供 applyRemoteUpdate（独立于 Collection 实现）
+ * - 提供 applyRemoteUpdate：按集合声明的 syncStrategy 应用远端变更
+ *   （append-only 仅接受新文档；lww 按版本向量 + 时间戳裁决）
  */
 
 export function metaKey(domain: string, collection: string, id: string) {
@@ -69,9 +71,112 @@ export function resolveConflictByLWW(localTs: number | null, remoteTs: number | 
   return 'equal';
 }
 
+/** 合并版本向量（逐节点取大），用于 append-only 幂等去重后的收敛 */
+function mergeVersionVectors(
+  local: Record<string, number> | null,
+  remote: Record<string, number> | null
+): Record<string, number> {
+  const merged: Record<string, number> = { ...(remote ?? {}) };
+  for (const [nodeId, counter] of Object.entries(local ?? {})) {
+    merged[nodeId] = Math.max(merged[nodeId] ?? 0, counter);
+  }
+  return merged;
+}
+
+/**
+ * append-only 集合的远端应用：
+ * - 本地不存在该文档：接受写入（附 meta 与存证）
+ * - 本地已存在且载荷一致：幂等去重，合并版本向量促进收敛
+ * - 本地已存在但载荷冲突 / 远端删除：拒绝并告警（不覆盖、不删除）
+ */
+async function applyRemoteAppendOnly<T>(
+  db: LevelDB,
+  collectionInstance: any,
+  domain: string,
+  collection: string,
+  id: string,
+  remotePayload: T | null,
+  remoteMeta: { vv: Record<string, number>; ts: number; nodeId?: string },
+  policy: ResolvedCollectionPolicy
+) {
+  if (remotePayload === null) {
+    console.warn('[sync] append-only: drop remote delete', { domain, collection, id });
+    return;
+  }
+
+  const local = await collectionInstance.get(id);
+  const localMeta = await getMeta(db, domain, collection, id);
+
+  if (!local) {
+    const ops: LevelDBOperation[] = [
+      { type: 'put', key: collectionInstance['docKey'](id), value: JSON.stringify(remotePayload) },
+      { type: 'put', key: metaKey(domain, collection, id), value: JSON.stringify({ vv: remoteMeta.vv, ts: remoteMeta.ts }) }
+    ];
+    const indexMap = collectionInstance['buildIndexMap'](remotePayload);
+    for (const [field, value] of indexMap.entries()) {
+      ops.push({ type: 'put', key: collectionInstance['indexKey'](field, value, id), value: '' });
+    }
+    if (policy.enableEvidence) {
+      const evidenceEntry = await buildNextEvidenceEntry(db, {
+        domain,
+        collection,
+        id,
+        op: 'put',
+        dataHash: buildEvidenceDataHash(domain, collection, id, 'put', buildEvidencePayloadHash(remotePayload), buildEvidenceMetaHash(remoteMeta)),
+        payloadHash: buildEvidencePayloadHash(remotePayload),
+        metaHash: buildEvidenceMetaHash(remoteMeta),
+        timestamp: Date.now(),
+        nodeId: remoteMeta.nodeId ?? 'remote-node'
+      });
+      ops.push(...evidenceBatchOperations(evidenceEntry));
+    }
+    await db.batch(ops);
+    return;
+  }
+
+  if (buildEvidencePayloadHash(local) === buildEvidencePayloadHash(remotePayload)) {
+    const mergedVv = mergeVersionVectors(localMeta?.vv ?? null, remoteMeta.vv ?? null);
+    const mergedTs = Math.max(localMeta?.ts ?? 0, remoteMeta.ts ?? 0);
+    const changed =
+      JSON.stringify(mergedVv) !== JSON.stringify(localMeta?.vv ?? {}) || mergedTs !== (localMeta?.ts ?? 0);
+    if (changed) {
+      await db.put(metaKey(domain, collection, id), JSON.stringify({ vv: mergedVv, ts: mergedTs }));
+    }
+    return;
+  }
+
+  console.warn('[sync] append-only: conflicting payload for existing document, keep local', {
+    domain,
+    collection,
+    id
+  });
+}
+
+/**
+ * 清洗同步消息携带的策略声明副本：
+ * 仅作合法化校验（不合法返回 undefined），不做持久化——
+ * 集合策略注册表只接受本地声明（见 db/schema.ts），网络来源永不写入，
+ * 防止远端节点通过伪造声明锁死/降级本地集合策略。
+ */
+function sanitizeSchemaHint(hint: CollectionSchemaDeclaration | undefined): CollectionSchemaDeclaration | undefined {
+  if (!hint || !isSyncStrategy(hint.syncStrategy)) {
+    return undefined;
+  }
+  if (hint.governance === true && hint.syncStrategy !== 'append-only') {
+    return undefined;
+  }
+  return {
+    syncStrategy: hint.syncStrategy,
+    governance: hint.governance === true,
+    enableEvidence: hint.enableEvidence === true
+  };
+}
+
 /**
  * 将远端更新合并到本地集合。
  * - collectionInstance 必须实现：get(id), db, and 私有方法 buildIndexMap/docKey/indexKey 可通过索引访问
+ * - options.schema 为同步消息携带的策略声明副本：仅当本地未声明时，作为本次应用的兜底策略
+ *   （瞬时生效，不持久化；本地已声明的策略始终优先，不受远端影响）
  */
 export async function applyRemoteUpdate<T = any>(
   db: LevelDB,
@@ -80,22 +185,62 @@ export async function applyRemoteUpdate<T = any>(
   collection: string,
   id: string,
   remotePayload: T | null,
-  remoteMeta: { vv: Record<string, number>; ts: number; nodeId?: string }
+  remoteMeta: { vv: Record<string, number>; ts: number; nodeId?: string },
+  options: { schema?: CollectionSchemaDeclaration } = {}
+) {
+  const fallback = sanitizeSchemaHint(options.schema);
+  if (options.schema && !fallback) {
+    console.warn('[sync] ignore invalid remote collection schema hint', { domain, collection });
+  }
+  const policy = await resolveCollectionPolicy(db, domain, collection, fallback);
+
+  if (policy.syncStrategy === 'append-only') {
+    await applyRemoteAppendOnly(db, collectionInstance, domain, collection, id, remotePayload, remoteMeta, policy);
+    return;
+  }
+
+  await applyRemoteLww(db, collectionInstance, domain, collection, id, remotePayload, remoteMeta, policy);
+}
+
+/** lww 集合的远端应用：版本向量判定新旧，并发冲突按时间戳裁决 */
+async function applyRemoteLww<T = any>(
+  db: LevelDB,
+  collectionInstance: any,
+  domain: string,
+  collection: string,
+  id: string,
+  remotePayload: T | null,
+  remoteMeta: { vv: Record<string, number>; ts: number; nodeId?: string },
+  policy: ResolvedCollectionPolicy
 ) {
   const localMeta = await getMeta(db, domain, collection, id);
   const cmp = compareVersionVectors(localMeta ? localMeta.vv : null, remoteMeta ? remoteMeta.vv : null);
   if (cmp === 'remote') {
     if (remotePayload === null) {
       const local = await collectionInstance.get(id);
+      const ops: LevelDBOperation[] = [];
       if (local) {
-        const ops: LevelDBOperation[] = [{ type: 'del', key: collectionInstance['docKey'](id) }];
+        ops.push({ type: 'del', key: collectionInstance['docKey'](id) });
         const idx = collectionInstance['buildIndexMap'](local);
         for (const [field, value] of idx.entries()) ops.push({ type: 'del', key: collectionInstance['indexKey'](field, value, id) });
-        ops.push({ type: 'put', key: metaKey(domain, collection, id), value: JSON.stringify({ vv: remoteMeta.vv, ts: remoteMeta.ts, tombstone: true }) });
-        await db.batch(ops);
-      } else {
-        await db.put(metaKey(domain, collection, id), JSON.stringify({ vv: remoteMeta.vv, ts: remoteMeta.ts, tombstone: true }));
       }
+      const tombstoneValue = JSON.stringify({ vv: remoteMeta.vv, ts: remoteMeta.ts, tombstone: true });
+      ops.push({ type: 'put', key: metaKey(domain, collection, id), value: tombstoneValue });
+      if (policy.enableEvidence) {
+        const evidenceEntry = await buildNextEvidenceEntry(db, {
+          domain,
+          collection,
+          id,
+          op: 'delete',
+          dataHash: buildEvidenceDataHash(domain, collection, id, 'delete', null, buildEvidenceMetaHash(JSON.parse(tombstoneValue))),
+          payloadHash: null,
+          metaHash: buildEvidenceMetaHash(JSON.parse(tombstoneValue)),
+          timestamp: Date.now(),
+          nodeId: remoteMeta.nodeId ?? 'remote-node'
+        });
+        ops.push(...evidenceBatchOperations(evidenceEntry));
+      }
+      await db.batch(ops);
     } else {
       const existing = await collectionInstance.get(id);
       const oldIndexMap = collectionInstance['buildIndexMap'](existing);
@@ -107,7 +252,22 @@ export async function applyRemoteUpdate<T = any>(
       for (const [field, newValue] of newIndexMap.entries()) {
         if (!oldIndexMap.has(field) || oldIndexMap.get(field) !== newValue) ops.push({ type: 'put', key: collectionInstance['indexKey'](field, newValue, id), value: '' });
       }
-      ops.push({ type: 'put', key: metaKey(domain, collection, id), value: JSON.stringify({ vv: remoteMeta.vv, ts: remoteMeta.ts }) });
+      const metaValue = JSON.stringify({ vv: remoteMeta.vv, ts: remoteMeta.ts });
+      ops.push({ type: 'put', key: metaKey(domain, collection, id), value: metaValue });
+      if (policy.enableEvidence) {
+        const evidenceEntry = await buildNextEvidenceEntry(db, {
+          domain,
+          collection,
+          id,
+          op: 'put',
+          dataHash: buildEvidenceDataHash(domain, collection, id, 'put', buildEvidencePayloadHash(remotePayload), buildEvidenceMetaHash(JSON.parse(metaValue))),
+          payloadHash: buildEvidencePayloadHash(remotePayload),
+          metaHash: buildEvidenceMetaHash(JSON.parse(metaValue)),
+          timestamp: Date.now(),
+          nodeId: remoteMeta.nodeId ?? 'remote-node'
+        });
+        ops.push(...evidenceBatchOperations(evidenceEntry));
+      }
       await db.batch(ops);
     }
     return;
@@ -130,7 +290,7 @@ export async function applyRemoteUpdate<T = any>(
         }
         const tombstoneValue = JSON.stringify({ vv: remoteMeta.vv, ts: remoteMeta.ts, tombstone: true });
         ops.push({ type: 'put', key: metaKey(domain, collection, id), value: tombstoneValue });
-        if (collectionInstance['enableEvidence']) {
+        if (policy.enableEvidence) {
           const evidenceEntry = await buildNextEvidenceEntry(db, {
             domain,
             collection,
@@ -158,7 +318,7 @@ export async function applyRemoteUpdate<T = any>(
         }
         const metaValue = JSON.stringify({ vv: remoteMeta.vv, ts: remoteMeta.ts });
         ops.push({ type: 'put', key: metaKey(domain, collection, id), value: metaValue });
-        if (collectionInstance['enableEvidence']) {
+        if (policy.enableEvidence) {
           const evidenceEntry = await buildNextEvidenceEntry(db, {
             domain,
             collection,

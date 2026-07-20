@@ -1,6 +1,7 @@
 /**
  * P2P 通道消息信封。
  * version/type/domain 用于协议路由；payload/meta 承载业务变更；
+ * schema 为集合同步策略声明副本（见 db/schema.ts），供接收方登记冲突处理策略；
  * pubKey/signature 用于端到端校验消息来源。
  */
 export type P2PMessageBody = {
@@ -11,6 +12,11 @@ export type P2PMessageBody = {
   id?: string;
   payload: any;
   meta?: any;
+  schema?: {
+    syncStrategy: 'append-only' | 'lww';
+    governance?: boolean;
+    enableEvidence?: boolean;
+  };
   evidenceHeadHash?: string | null;
   timestamp: number;
   pubKey?: string;

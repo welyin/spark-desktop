@@ -64,6 +64,8 @@ export interface PluginRuntimeAPI {
 
 export interface PluginDocAPI {
   get: <T extends Record<string, unknown> = Record<string, unknown>>(collection: string, id: string) => Promise<T | null>;
+  /** 声明集合同步策略：写入前必须调用，syncStrategy 必填；声明持久化且不可变更 */
+  defineCollection: (collection: string, schema: PluginCollectionSchema) => Promise<PluginDeclaredCollectionSchema>;
   put: (collection: string, id: string, doc: Record<string, unknown>) => Promise<{ success: boolean }>;
   delete: (collection: string, id: string) => Promise<{ success: boolean }>;
   query: <T extends Record<string, unknown> = Record<string, unknown>>(
@@ -83,6 +85,28 @@ export interface PluginDocAPI {
 export interface PluginIdentityAPI {
   sign: (payload: string) => Promise<DomainSignature>;
   verify: (payload: string, signature: string, publicKey: string) => Promise<{ valid: boolean }>;
+}
+
+/**
+ * 集合同步策略声明（设计文档 V2 §4.3.4）
+ * - `syncStrategy` 必填，类型层面强制显式选择：
+ *   - `append-only`（默认推荐）：仅追加、不覆盖、不删除，自动配合链式存证
+ *   - `lww`：最后写入获胜，仅适用于可容忍覆盖的普通状态数据
+ * - `governance`：治理类数据（投票、成员、账目）标记，强制 append-only + 链式存证，插件无权降级
+ * - `enableEvidence`：仅 lww 集合可选；append-only 集合强制开启
+ * 声明持久化且不可变更，重复声明必须与首次一致。
+ */
+export interface PluginCollectionSchema {
+  syncStrategy: 'append-only' | 'lww';
+  governance?: boolean;
+  enableEvidence?: boolean;
+}
+
+export interface PluginDeclaredCollectionSchema {
+  collection: string;
+  syncStrategy: 'append-only' | 'lww';
+  governance: boolean;
+  enableEvidence: boolean;
 }
 
 export interface PluginSDK {
@@ -148,6 +172,8 @@ export async function createPluginSDK(ipcRenderer: IpcRenderer): Promise<PluginS
     },
     docs: {
       get: (collection: string, id: string) => ipcRenderer.invoke('plugin-doc-get', collection, id),
+      defineCollection: (collection: string, schema: PluginCollectionSchema) =>
+        ipcRenderer.invoke('plugin-doc-declare-collection', collection, schema),
       put: (collection: string, id: string, doc: Record<string, unknown>) =>
         ipcRenderer.invoke('plugin-doc-put', collection, id, doc),
       delete: (collection: string, id: string) => ipcRenderer.invoke('plugin-doc-delete', collection, id),

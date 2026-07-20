@@ -2,6 +2,12 @@ import { LevelDBOperation, LevelDB, DocumentValue } from './base';
 import { getP2PNode, isP2PInitialized } from '../p2p';
 import { generateUpdatedMeta, metaKey, applyRemoteUpdate } from './sync';
 import {
+  CollectionSchemaDeclaration,
+  ResolvedCollectionPolicy,
+  SyncStrategy,
+  resolveCollectionPolicy
+} from './schema';
+import {
   buildEvidenceDataHash,
   buildEvidenceMetaHash,
   buildEvidencePayloadHash,
@@ -11,10 +17,14 @@ import {
 
 /**
  * 集合配置：可指定需要建立索引的字段列表
+ * - `syncStrategy` / `governance` / `enableEvidence` 仅作为策略兜底声明，
+ *   已持久化的集合声明（见 db/schema.ts）优先于此处配置
  */
 export interface CollectionConfig {
   indexedFields?: string[];
   enableEvidence?: boolean;
+  syncStrategy?: SyncStrategy;
+  governance?: boolean;
 }
 
 /**
@@ -59,11 +69,10 @@ export interface CollectionQueryResult<T extends DocumentValue = DocumentValue> 
  * - 单集合事务（批量写入封装）
  */
 export class DocumentCollection<T extends DocumentValue = DocumentValue> {
-  private static evidencePolicy = new Map<string, boolean>();
-
   private readonly keyPrefix: string;
   private readonly indexPrefixBase: string;
   private readonly indexedFields: string[];
+  private readonly policyHint?: CollectionSchemaDeclaration;
 
   constructor(
     private readonly db: LevelDB,
@@ -74,22 +83,29 @@ export class DocumentCollection<T extends DocumentValue = DocumentValue> {
     this.keyPrefix = `doc:${domain}:${collection}:`;
     this.indexPrefixBase = `idx:${domain}:${collection}:`;
     this.indexedFields = config.indexedFields ?? [];
-    if (config.enableEvidence !== undefined) {
-      DocumentCollection.setEvidenceEnabled(domain, collection, config.enableEvidence);
+    if (config.syncStrategy || config.governance !== undefined || config.enableEvidence !== undefined) {
+      this.policyHint = {
+        // 历史上仅声明 enableEvidence 的调用方期望可覆盖语义，兜底策略按 lww 处理
+        syncStrategy: config.syncStrategy ?? 'lww',
+        governance: config.governance,
+        enableEvidence: config.enableEvidence
+      };
     }
-    this.enableEvidence = config.enableEvidence ?? DocumentCollection.isEvidenceEnabled(domain, collection);
   }
 
-  static setEvidenceEnabled(domain: string, collection: string, enabled: boolean) {
-    DocumentCollection.evidencePolicy.set(`${domain}:${collection}`, enabled);
+  /** 解析集合当前生效的同步策略：持久化声明优先，其次构造配置，最后退回默认（最安全） */
+  private async resolvePolicy(): Promise<ResolvedCollectionPolicy> {
+    return resolveCollectionPolicy(this.db, this.domain, this.collection, this.policyHint);
   }
 
-  static isEvidenceEnabled(domain: string, collection: string) {
-    return DocumentCollection.evidencePolicy.get(`${domain}:${collection}`) ?? false;
+  /** 同步策略声明副本，随同步消息携带，供远端节点在本地未声明时作为本次应用的兜底策略（不持久化） */
+  private policyDeclaration(policy: ResolvedCollectionPolicy): CollectionSchemaDeclaration {
+    return {
+      syncStrategy: policy.syncStrategy,
+      governance: policy.governance,
+      enableEvidence: policy.enableEvidence
+    };
   }
-
-  private readonly enableEvidence: boolean;
-
 
   /** 主键文档键 */
   private docKey(id: string) {
@@ -156,9 +172,15 @@ export class DocumentCollection<T extends DocumentValue = DocumentValue> {
     return this.decodeDocument(raw);
   }
 
-  /** 写入/替换文档，同时维护二级索引的删除/新增 */
+  /** 写入/替换文档，同时维护二级索引的删除/新增；append-only 集合拒绝覆盖已存在的文档 */
   async put(id: string, doc: T): Promise<void> {
+    const policy = await this.resolvePolicy();
     const existing = await this.get(id);
+    if (policy.syncStrategy === 'append-only' && existing) {
+      throw new Error(
+        `Collection "${this.collection}" is append-only: document "${id}" already exists and cannot be overwritten`
+      );
+    }
     const oldIndexMap = this.buildIndexMap(existing);
     const newIndexMap = this.buildIndexMap(doc);
     const ops: LevelDBOperation[] = [{ type: 'put', key: this.docKey(id), value: JSON.stringify(doc) }];
@@ -182,7 +204,7 @@ export class DocumentCollection<T extends DocumentValue = DocumentValue> {
     const meta = await generateUpdatedMeta(this.db, nodeId, this.domain, this.collection, id);
     ops.push({ type: 'put', key: metaKey(this.domain, this.collection, id), value: JSON.stringify(meta) });
 
-    if (this.enableEvidence) {
+    if (policy.enableEvidence) {
       const evidenceEntry = await buildNextEvidenceEntry(this.db, {
         domain: this.domain,
         collection: this.collection,
@@ -199,7 +221,7 @@ export class DocumentCollection<T extends DocumentValue = DocumentValue> {
 
     await this.db.batch(ops);
 
-    // 广播变更到 P2P（非阻塞）
+    // 广播变更到 P2P（非阻塞），随消息携带策略声明供远端节点学习
     if (isP2PInitialized()) {
       try {
         await getP2PNode().broadcast('spark-sync', {
@@ -208,7 +230,8 @@ export class DocumentCollection<T extends DocumentValue = DocumentValue> {
           collection: this.collection,
           id,
           payload: doc,
-          meta
+          meta,
+          schema: this.policyDeclaration(policy)
         } as any);
       } catch (err) {
         console.warn('[collection] p2p broadcast failed', err);
@@ -216,8 +239,12 @@ export class DocumentCollection<T extends DocumentValue = DocumentValue> {
     }
   }
 
-  /** 删除文档并清理对应索引 */
+  /** 删除文档并清理对应索引；append-only 集合禁止删除 */
   async delete(id: string): Promise<void> {
+    const policy = await this.resolvePolicy();
+    if (policy.syncStrategy === 'append-only') {
+      throw new Error(`Collection "${this.collection}" is append-only: documents cannot be deleted`);
+    }
     const existing = await this.get(id);
     if (!existing) {
       return;
@@ -234,7 +261,7 @@ export class DocumentCollection<T extends DocumentValue = DocumentValue> {
     const tombstoneMeta = { vv: meta.vv, ts: meta.ts, tombstone: true };
     ops.push({ type: 'put', key: metaKey(this.domain, this.collection, id), value: JSON.stringify(tombstoneMeta) });
 
-    if (this.enableEvidence) {
+    if (policy.enableEvidence) {
       const evidenceEntry = await buildNextEvidenceEntry(this.db, {
         domain: this.domain,
         collection: this.collection,
@@ -251,7 +278,7 @@ export class DocumentCollection<T extends DocumentValue = DocumentValue> {
 
     await this.db.batch(ops);
 
-    // 广播删除事件
+    // 广播删除事件，随消息携带策略声明供远端节点学习
     if (isP2PInitialized()) {
       try {
         await getP2PNode().broadcast('spark-sync', {
@@ -260,18 +287,14 @@ export class DocumentCollection<T extends DocumentValue = DocumentValue> {
           collection: this.collection,
           id,
           payload: null,
-          meta
+          meta,
+          schema: this.policyDeclaration(policy)
         } as any);
       } catch (err) {
         console.warn('[collection] p2p broadcast delete failed', err);
       }
     }
   }
-
-  /**
-   * 应用远端更新：根据版本向量与 LWW 策略决定是否写入
-   * - remotePayload 为 null 表示删除（tombstone）
-   */
 
   /**
    * 查询集合：支持按二级索引或主键范围扫描，并在内存中应用 filter 条件
@@ -431,17 +454,27 @@ class CollectionTransaction<T extends DocumentValue = DocumentValue> {
     return existing;
   }
 
-  /** 在事务中写入文档（仅缓存，提交时应用） */
+  /** 在事务中写入文档（仅缓存，提交时应用）；append-only 集合拒绝覆盖已存在的文档 */
   async put(id: string, doc: T): Promise<void> {
     const existing = await this.get(id);
+    const policy = await this.collection['resolvePolicy']();
+    if (policy.syncStrategy === 'append-only' && existing) {
+      throw new Error(
+        `Collection "${this.collection['collection']}" is append-only: document "${id}" already exists and cannot be overwritten`
+      );
+    }
     const oldIndex = this.collection['buildIndexMap'](existing);
     const newIndex = this.collection['buildIndexMap'](doc);
     this.pending.set(id, { type: 'put', doc, oldIndex, newIndex });
     this.readCache.set(id, doc);
   }
 
-  /** 在事务中删除文档（仅缓存，提交时应用） */
+  /** 在事务中删除文档（仅缓存，提交时应用）；append-only 集合禁止删除 */
   async delete(id: string): Promise<void> {
+    const policy = await this.collection['resolvePolicy']();
+    if (policy.syncStrategy === 'append-only') {
+      throw new Error(`Collection "${this.collection['collection']}" is append-only: documents cannot be deleted`);
+    }
     const existing = await this.get(id);
     if (!existing) {
       this.pending.set(id, { type: 'del', oldIndex: new Map(), newIndex: new Map() });

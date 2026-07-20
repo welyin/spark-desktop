@@ -84,6 +84,8 @@ export async function initializePluginSDK(): Promise<PluginSDK> {
     docs: {
       get: (collection: string, id: string) =>
         electronAPI.plugin.docGet(collection, id, needsExplicitPluginDomain ? domain : undefined),
+      defineCollection: (collection: string, schema) =>
+        electronAPI.plugin.docDeclareCollection(collection, schema, needsExplicitPluginDomain ? domain : undefined),
       put: (collection: string, id: string, doc: Record<string, unknown>) =>
         electronAPI.plugin.docPut(collection, id, doc, needsExplicitPluginDomain ? domain : undefined),
       delete: (collection: string, id: string) =>

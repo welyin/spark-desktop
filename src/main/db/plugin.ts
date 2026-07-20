@@ -1,6 +1,7 @@
 import { LevelDB } from './base';
 import { DocumentCollection, CollectionQueryOptions, CollectionQueryResult } from './collection';
 import { DOMAIN_PLUGIN_PREFIX } from './domain';
+import { CollectionSchemaRecord, getCollectionSchema } from './schema';
 
 export function assertPluginDomain(domain?: string | null): string {
   if (!domain || typeof domain !== 'string' || !domain.startsWith(DOMAIN_PLUGIN_PREFIX)) {
@@ -19,6 +20,33 @@ export function getPluginCollection<T extends Record<string, unknown> = Record<s
     enableEvidence: true,
     indexedFields: []
   });
+}
+
+/**
+ * 获取已声明同步策略的插件集合（写路径专用）。
+ * 设计文档 V2 §4.3.4：集合必须先经 sdk.docs.defineCollection 声明 syncStrategy，
+ * 未声明的集合拒绝写入/删除。
+ */
+export async function getDeclaredPluginCollection<T extends Record<string, unknown> = Record<string, unknown>>(
+  db: LevelDB,
+  domain: string,
+  collection: string
+): Promise<{ coll: DocumentCollection<T>; schema: CollectionSchemaRecord }> {
+  assertPluginDomain(domain);
+  const schema = await getCollectionSchema(db, domain, collection);
+  if (!schema) {
+    throw new Error(
+      `Collection "${collection}" in ${domain} has no declared syncStrategy. ` +
+        'Declare it first via sdk.docs.defineCollection().'
+    );
+  }
+  const coll = new DocumentCollection<T>(db, domain, collection, {
+    syncStrategy: schema.syncStrategy,
+    governance: schema.governance,
+    enableEvidence: schema.enableEvidence,
+    indexedFields: []
+  });
+  return { coll, schema };
 }
 
 export async function putPluginDoc<T extends Record<string, unknown>>(
