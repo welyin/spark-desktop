@@ -55,6 +55,26 @@
           <p class="hint">创建人会自动成为该组织的管理员和首位成员。组织必须绑定一个基础插件。</p>
           <el-alert v-if="message" :title="message" type="info" :closable="false" show-icon />
         </el-card>
+
+        <el-card shadow="never" class="panel-card">
+          <template #header>
+            <h2>通过邀请码加入</h2>
+          </template>
+          <el-form label-position="top">
+            <el-form-item label="邀请码">
+              <el-input
+                v-model="inviteCodeInput"
+                type="textarea"
+                :rows="3"
+                placeholder="粘贴管理员分享给你的邀请码"
+              />
+            </el-form-item>
+            <el-button type="primary" :loading="acceptingInvite" @click="acceptInvite">
+              {{ acceptingInvite ? '加入中...' : '加入组织' }}
+            </el-button>
+          </el-form>
+          <p class="hint">加入前提：管理员已先将你的 RootID 录入组织成员。邀请码用于连接管理员节点并拉取组织数据。</p>
+        </el-card>
       </el-col>
 
       <el-col :lg="16" :md="14" :sm="24" :xs="24">
@@ -117,6 +137,16 @@
             <el-descriptions-item label="管理员数">{{ selectedOrganization.adminCount }}</el-descriptions-item>
           </el-descriptions>
 
+          <div v-if="syncOverview" class="replica-row">
+            <el-tag :type="syncOverview.syncedPeers >= syncOverview.replicaTarget ? 'success' : 'warning'">
+              副本 {{ syncOverview.syncedPeers }}/{{ syncOverview.replicaTarget }}
+            </el-tag>
+            <span class="replica-hint">
+              {{ syncOverview.syncedPeers >= syncOverview.replicaTarget ? '副本充足' : '副本不足，建议成员保持在线或邀请更多节点' }}
+              （已同步节点 {{ syncOverview.syncedPeers }} / 成员 {{ syncOverview.totalMembers }}）
+            </span>
+          </div>
+
           <h3 class="section-title">成员列表</h3>
           <el-table :data="selectedOrganization.members" stripe>
             <el-table-column prop="rootId" label="RootID" min-width="280" />
@@ -136,6 +166,9 @@
             <el-table-column label="节点地址" min-width="260">
               <template #default="scope">{{ (scope.row.nodeInfo?.addresses || []).join(' , ') || '-' }}</template>
             </el-table-column>
+            <el-table-column label="最近同步" min-width="160">
+              <template #default="scope">{{ memberSyncLabel(scope.row.rootId) }}</template>
+            </el-table-column>
           </el-table>
 
           <section v-if="selectedOrganization.isCurrentUserAdmin" class="admin-actions">
@@ -143,7 +176,7 @@
 
             <el-card shadow="never" class="inner-op-card">
               <template #header>
-                <h4>添加成员</h4>
+                <h4>添加成员（预录入）</h4>
               </template>
               <el-form label-position="top">
                 <el-form-item label="添加成员 RootID">
@@ -152,7 +185,7 @@
                 <el-form-item label="成员 PeerId（可选）">
                   <el-input v-model="addMemberPeerId" placeholder="例如：12D3KooW..." />
                 </el-form-item>
-                <el-form-item label="成员节点地址（必填其一，可多条，逗号/分号/换行分隔）">
+                <el-form-item label="成员节点地址（可选，可多条，逗号/分号/换行分隔）">
                   <el-input
                     v-model="addMemberAddresses"
                     type="textarea"
@@ -164,6 +197,21 @@
                   {{ busyAction === 'add' ? '添加中...' : '添加成员' }}
                 </el-button>
               </el-form>
+              <p class="hint">只填 RootID 即可预录入；对方凭邀请码加入时会自动回填节点地址。</p>
+            </el-card>
+
+            <el-card shadow="never" class="inner-op-card">
+              <template #header>
+                <h4>邀请成员</h4>
+              </template>
+              <p class="hint">预录入成员 RootID 后生成邀请码，经线下渠道发给对方；对方凭码连接你的节点完成加入（你需要保持在线）。</p>
+              <el-button type="primary" plain :loading="busyAction === 'invite'" @click="createInvite">
+                {{ busyAction === 'invite' ? '生成中...' : '生成邀请码' }}
+              </el-button>
+              <div v-if="generatedInvite" class="invite-result">
+                <el-input v-model="generatedInvite" type="textarea" :rows="3" readonly />
+                <el-button size="small" @click="copyInvite">复制邀请码</el-button>
+              </div>
             </el-card>
 
             <el-card shadow="never" class="inner-op-card">
@@ -233,6 +281,20 @@ type CreateForm = {
   basePluginDomain: string;
 };
 
+type OrgSyncOverview = {
+  orgId: string;
+  replicaTarget: number;
+  syncedPeers: number;
+  totalMembers: number;
+  members: Array<{
+    rootId: string;
+    peerId?: string;
+    isSelf: boolean;
+    everSynced: boolean;
+    lastSyncedAt: number | null;
+  }>;
+};
+
 type PluginCatalogItem = {
   id: string;
   domain: string;
@@ -251,7 +313,7 @@ export default defineComponent({
     const selectedOrgId = ref('');
     const loading = ref(false);
     const creating = ref(false);
-    const busyAction = ref<'add' | 'remove' | 'delete' | ''>('');
+    const busyAction = ref<'add' | 'remove' | 'delete' | 'invite' | ''>('');
     const message = ref('');
     const pluginCatalog = ref<PluginCatalogItem[]>([]);
     const addMemberRootId = ref('');
@@ -259,6 +321,10 @@ export default defineComponent({
     const addMemberAddresses = ref('');
     const removeMemberRootId = ref('');
     const createForm = ref<CreateForm>({ name: '', description: '', basePluginDomain: '' });
+    const inviteCodeInput = ref('');
+    const acceptingInvite = ref(false);
+    const generatedInvite = ref('');
+    const syncOverview = ref<OrgSyncOverview | null>(null);
 
     const foundationPlugins = computed(() => {
       return pluginCatalog.value.filter((plugin) => plugin.category === 'foundation');
@@ -267,8 +333,23 @@ export default defineComponent({
     const selectedOrganization = computed(() => {
       return organizations.value.find((organization) => organization.orgId === selectedOrgId.value) ?? null;
     });
+
+    const refreshSyncOverview = async () => {
+      if (!selectedOrgId.value) {
+        syncOverview.value = null;
+        return;
+      }
+      try {
+        syncOverview.value = await window.electronAPI.organization.getSyncOverview(selectedOrgId.value);
+      } catch {
+        syncOverview.value = null;
+      }
+    };
+
     const selectOrganization = (organization: OrganizationView) => {
       selectedOrgId.value = organization.orgId;
+      generatedInvite.value = '';
+      void refreshSyncOverview();
 
       if (!organization.basePluginDomain) {
         return;
@@ -298,6 +379,7 @@ export default defineComponent({
         if (!organizations.value.some((organization) => organization.orgId === selectedOrgId.value)) {
           selectedOrgId.value = organizations.value[0]?.orgId ?? '';
         }
+        await refreshSyncOverview();
       } catch (error) {
         message.value = `加载组织失败：${error}`;
         ElMessage.error(message.value);
@@ -371,21 +453,19 @@ export default defineComponent({
         return;
       }
 
-      if (!addMemberPeerId.value.trim() && addresses.length === 0) {
-        message.value = '请输入成员节点信息：PeerId 或至少一个多地址';
-        ElMessage.warning(message.value);
-        return;
-      }
+      const nodeInfo = addMemberPeerId.value.trim() || addresses.length > 0
+        ? {
+            peerId: addMemberPeerId.value.trim() || undefined,
+            addresses
+          }
+        : undefined;
 
       busyAction.value = 'add';
       message.value = '';
       try {
         const updated = await window.electronAPI.organization.addMember(selectedOrganization.value.orgId, {
           rootId: addMemberRootId.value,
-          nodeInfo: {
-            peerId: addMemberPeerId.value.trim() || undefined,
-            addresses
-          }
+          nodeInfo
         });
         message.value = '成员添加成功';
         ElMessage.success(message.value);
@@ -395,6 +475,7 @@ export default defineComponent({
         organizations.value = organizations.value.map((organization) =>
           organization.orgId === updated.orgId ? updated : organization
         );
+        await refreshSyncOverview();
       } catch (error) {
         message.value = `添加成员失败：${error}`;
         ElMessage.error(message.value);
@@ -456,6 +537,74 @@ export default defineComponent({
       }
     };
 
+    const createInvite = async () => {
+      if (!selectedOrganization.value) {
+        return;
+      }
+
+      busyAction.value = 'invite';
+      message.value = '';
+      try {
+        const result = await window.electronAPI.organization.createInvite(selectedOrganization.value.orgId);
+        generatedInvite.value = result.invite;
+        message.value = '邀请码已生成，请通过线下渠道发送给被邀请人';
+        ElMessage.success(message.value);
+      } catch (error) {
+        message.value = `生成邀请码失败：${error}`;
+        ElMessage.error(message.value);
+      } finally {
+        busyAction.value = '';
+      }
+    };
+
+    const copyInvite = async () => {
+      try {
+        await navigator.clipboard.writeText(generatedInvite.value);
+        ElMessage.success('邀请码已复制');
+      } catch {
+        ElMessage.warning('复制失败，请手动选择文本复制');
+      }
+    };
+
+    const acceptInvite = async () => {
+      if (!inviteCodeInput.value.trim()) {
+        message.value = '请输入邀请码';
+        ElMessage.warning(message.value);
+        return;
+      }
+
+      acceptingInvite.value = true;
+      message.value = '';
+      try {
+        const joined = await window.electronAPI.organization.acceptInvite(inviteCodeInput.value.trim());
+        message.value = `已加入组织：${joined.orgName}`;
+        ElMessage.success(message.value);
+        inviteCodeInput.value = '';
+        await refreshOrganizations();
+        selectedOrgId.value = joined.orgId;
+        await refreshSyncOverview();
+      } catch (error) {
+        message.value = `加入组织失败：${error}`;
+        ElMessage.error(message.value);
+      } finally {
+        acceptingInvite.value = false;
+      }
+    };
+
+    const memberSyncLabel = (rootId: string) => {
+      const item = syncOverview.value?.members.find((member) => member.rootId === rootId);
+      if (!item) {
+        return '-';
+      }
+      if (item.isSelf) {
+        return '本机';
+      }
+      if (!item.everSynced) {
+        return '未同步';
+      }
+      return item.lastSyncedAt ? formatDate(item.lastSyncedAt) : '已同步';
+    };
+
     const formatDate = (timestamp: number) => {
       return new Intl.DateTimeFormat('zh-CN', {
         year: 'numeric',
@@ -486,12 +635,20 @@ export default defineComponent({
       addMemberAddresses,
       removeMemberRootId,
       createForm,
+      inviteCodeInput,
+      acceptingInvite,
+      generatedInvite,
+      syncOverview,
       selectOrganization,
       refreshOrganizations,
       createOrganization,
       addMember,
       removeMember,
       deleteOrganization,
+      createInvite,
+      copyInvite,
+      acceptInvite,
+      memberSyncLabel,
       formatDate
     };
   }
@@ -594,6 +751,25 @@ h4 {
 
 .detail-card {
   margin-top: 16px;
+}
+
+.replica-row {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.replica-hint {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.invite-result {
+  margin-top: 12px;
+  display: grid;
+  gap: 8px;
+  justify-items: start;
 }
 
 .section-title {

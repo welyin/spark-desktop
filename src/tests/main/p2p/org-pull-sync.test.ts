@@ -92,4 +92,170 @@ describe('OrgPullSyncService', () => {
     expect(pushCalls).toBe(0);
     expect(await db.get(`org:meta:${orgId}`)).toBeNull();
   });
+
+  it('forwards piggybacked node info claims on list requests without breaking responses', async () => {
+    const db = new MemoryDb() as any;
+    const rootId = 'a'.repeat(64);
+    const requesterRootId = 'b'.repeat(64);
+    const claimCalls: Array<{ claim: unknown; context: unknown }> = [];
+
+    // 请求方须是某组织成员，claim 才会被处理
+    await db.put('org:meta:org_claim_case', JSON.stringify({
+      orgId: 'org_claim_case',
+      name: 'Claim Org',
+      description: '',
+      createdAt: 1,
+      createdBy: rootId,
+      updatedAt: 2,
+      members: [
+        { rootId, role: 'admin', joinedAt: 1, addedBy: rootId },
+        { rootId: requesterRootId, role: 'member', joinedAt: 1, addedBy: rootId }
+      ]
+    }));
+
+    const service = new OrgPullSyncService({
+      db,
+      identityContext: { getCurrentRootId: async () => rootId },
+      runtimeImport: async () => ({}),
+      getNode: () => null,
+      connectPeer: async () => {},
+      onNodeInfoClaim: async (claim, context) => {
+        claimCalls.push({ claim, context });
+      }
+    });
+
+    const response = await service.handleDirectRequest({
+      type: 'org-pull-list',
+      payload: {
+        requesterRootId,
+        requesterPeerId: 'QmRequester',
+        nodeInfoClaim: { marker: 'claim' }
+      }
+    }, { connection: { remotePeer: 'QmRemote' } });
+
+    expect(response.ok).toBe(true);
+    expect(claimCalls).toHaveLength(1);
+    expect(claimCalls[0]?.claim).toEqual({ marker: 'claim' });
+    expect(claimCalls[0]?.context).toEqual({ remotePeerId: 'QmRemote' });
+
+    // claim 处理失败不影响本次拉取响应
+    const failing = new OrgPullSyncService({
+      db,
+      identityContext: { getCurrentRootId: async () => rootId },
+      runtimeImport: async () => ({}),
+      getNode: () => null,
+      connectPeer: async () => {},
+      onNodeInfoClaim: async () => {
+        throw new Error('claim store down');
+      }
+    });
+    const stillOk = await failing.handleDirectRequest({
+      type: 'org-pull-list',
+      payload: { requesterRootId, nodeInfoClaim: { marker: 'claim' } }
+    }, {});
+    expect(stillOk.ok).toBe(true);
+  });
+
+  it('does not process node info claims from non-member requesters', async () => {
+    const db = new MemoryDb() as any;
+    const rootId = 'a'.repeat(64);
+    const claimCalls: unknown[] = [];
+
+    await db.put('org:meta:org_claim_gate', JSON.stringify({
+      orgId: 'org_claim_gate',
+      name: 'Gated Org',
+      description: '',
+      createdAt: 1,
+      createdBy: rootId,
+      updatedAt: 2,
+      members: [{ rootId, role: 'admin', joinedAt: 1, addedBy: rootId }]
+    }));
+
+    const service = new OrgPullSyncService({
+      db,
+      identityContext: { getCurrentRootId: async () => rootId },
+      runtimeImport: async () => ({}),
+      getNode: () => null,
+      connectPeer: async () => {},
+      onNodeInfoClaim: async (claim) => {
+        claimCalls.push(claim);
+      }
+    });
+
+    const response = await service.handleDirectRequest({
+      type: 'org-pull-list',
+      payload: {
+        requesterRootId: 'c'.repeat(64),
+        nodeInfoClaim: { marker: 'stranger-claim' }
+      }
+    }, { connection: { remotePeer: 'QmStranger' } });
+
+    expect(response.ok).toBe(true);
+    expect(claimCalls).toHaveLength(0);
+  });
+
+  it('records peer sync state after a successful pull', async () => {
+    const db = new MemoryDb() as any;
+    const rootId = 'a'.repeat(64);
+    const orgId = 'org_sync_state_case';
+
+    await db.put(`org:meta:${orgId}`, JSON.stringify({
+      orgId,
+      name: 'Local Copy',
+      description: '',
+      createdAt: 1,
+      createdBy: rootId,
+      updatedAt: 2,
+      members: [{ rootId, role: 'member', joinedAt: 1, addedBy: rootId }]
+    }));
+
+    const syncStateCalls: Array<{ peerId: string; orgId: string; versions: any }> = [];
+    const service = new OrgPullSyncService({
+      db,
+      identityContext: { getCurrentRootId: async () => rootId },
+      runtimeImport: async () => ({}),
+      getNode: () => ({ peerId: { toString: () => 'QmSelf' } }),
+      connectPeer: async () => {},
+      onSyncState: async (peerId, org, versions) => {
+        syncStateCalls.push({ peerId, orgId: org, versions });
+      }
+    });
+
+    const remoteVersions = { summaryVersion: 100, membersVersion: 100, memberDetailsVersion: 100, transactionsVersion: 100 };
+    (service as any).requestDirect = async (_nodeInfo: any, request: any) => {
+      if (request.type === 'org-pull-list') {
+        return {
+          ok: true,
+          type: 'org-pull-list-response',
+          organizations: [{ orgId, sync: remoteVersions }]
+        };
+      }
+      return {
+        ok: true,
+        type: 'org-pull-org-response',
+        orgId,
+        status: 'member',
+        organization: {
+          orgId,
+          name: 'Remote Copy',
+          description: '',
+          createdAt: 1,
+          createdBy: rootId,
+          updatedAt: 100,
+          members: [{ rootId, role: 'member', joinedAt: 1, addedBy: rootId }]
+        }
+      };
+    };
+
+    const result = await service.reconcileFromPeer({
+      peerId: 'QmPeer',
+      addresses: ['/ip4/127.0.0.1/tcp/15002/ws']
+    });
+
+    expect(result.pulled).toBe(1);
+    expect(syncStateCalls).toHaveLength(1);
+    expect(syncStateCalls[0]?.peerId).toBe('QmPeer');
+    expect(syncStateCalls[0]?.orgId).toBe(orgId);
+    expect(syncStateCalls[0]?.versions.summaryVersion).toBe(100);
+  });
 });

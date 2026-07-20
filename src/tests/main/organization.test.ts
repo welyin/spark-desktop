@@ -105,7 +105,7 @@ describe('OrganizationService', () => {
 		await expect(service.removeMember(created.orgId, rootId)).rejects.toThrow(/at least one admin/i);
 	});
 
-	it('requires member node info and sync callback when adding a member', async () => {
+	it('requires sync callback when adding a member; empty node info means offline pre-record', async () => {
 		const db = new MemoryDb();
 		const rootId = 'f'.repeat(64);
 		const serviceWithoutSync = new OrganizationService(db, {
@@ -123,18 +123,40 @@ describe('OrganizationService', () => {
 			})
 		).rejects.toThrow(/not configured/i);
 
+		// 预录入模型：只给 RootID（nodeInfo 为空等同未提供）即可添加，
+		// 节点地址后续由成员凭邀请码上线时经 nodeInfoClaim 自动回填
 		const serviceWithSync = new OrganizationService(db, {
 			getCurrentRootId: async () => rootId
 		}, {
 			syncOrganizationToMember: async () => {}
 		});
 
-		await expect(
-			serviceWithSync.addMember(created.orgId, {
-				rootId: '2'.repeat(64),
-				nodeInfo: { peerId: '', addresses: [] }
-			})
-		).rejects.toThrow(/node info/i);
+		const updated = await serviceWithSync.addMember(created.orgId, {
+			rootId: '2'.repeat(64),
+			nodeInfo: { peerId: '', addresses: [] }
+		});
+		const member = updated.members.find((item) => item.rootId === '2'.repeat(64));
+		expect(member).toBeTruthy();
+		expect(member?.nodeInfo).toBeUndefined();
+	});
+
+	it('does not fail addMember when the new member is unreachable (sync deferred)', async () => {
+		const db = new MemoryDb();
+		const rootId = 'a'.repeat(64);
+		const service = new OrganizationService(db, {
+			getCurrentRootId: async () => rootId
+		}, {
+			syncOrganizationToMember: async () => {
+				throw new Error('dial timeout');
+			}
+		});
+
+		const created = await service.createOrganization({ name: 'Deferred Org', basePluginDomain: 'plugin:weibo-core' });
+		const updated = await service.addMember(created.orgId, {
+			rootId: 'b'.repeat(64),
+			nodeInfo: { peerId: 'QmOfflinePeerDemo', addresses: ['/ip4/127.0.0.1/tcp/15999/ws'] }
+		});
+		expect(updated.memberCount).toBe(2);
 	});
 
 	it('requires valid base plugin domain when creating organization', async () => {

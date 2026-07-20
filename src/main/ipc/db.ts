@@ -1,7 +1,7 @@
 import { levelDB, parseDomainFromKey, getEvidenceHeadHash, verifyEvidenceChain, getEvidenceHeight } from '../db';
 import { isValidPluginDomain } from '../domain-registry';
 import { isP2PInitialized, getP2PNode } from '../p2p/index';
-import { ensureCoreServicesStarted } from '../bootstrap';
+import { ensureCoreServicesStarted, stopOrganizationKeepalive } from '../bootstrap';
 import { getCallerDomain, registerInvokeHandler, requireAccess, requirePluginPermission, requireSystemDomain } from './helpers';
 
 /**
@@ -17,6 +17,8 @@ export function registerDbHandlers(): void {
 
   registerInvokeHandler('db-close', async (event) => {
     requireSystemDomain(event);
+    // 先停保活循环，避免 tick 在 p2p 停止/数据库关闭后继续访问
+    stopOrganizationKeepalive();
     if (isP2PInitialized() && getP2PNode().isStarted()) {
       await getP2PNode().stop();
     }

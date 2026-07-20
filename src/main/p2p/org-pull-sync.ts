@@ -1,5 +1,5 @@
 import { DIRECT_ORG_SHARE_PROTOCOL, ORG_META_PREFIX } from './constants';
-import { buildDialTargets } from './peer-targets';
+import { buildDialTargets, extractPeerId } from './peer-targets';
 import { buildOrganizationSyncSnapshot, isOrganizationSyncStale, mergeOrganizationSyncSnapshot, type OrganizationSyncVersions } from '../organization/sync';
 import { normalizeIncomingSnapshot } from './org-share-snapshot';
 import { applyPluginDocSyncItems, collectSyncablePluginDocsByOrg } from './plugin-org-sync';
@@ -17,6 +17,10 @@ type OrgPullSyncDeps = {
   getNode: () => any | null;
   connectPeer: (nodeInfo: PeerNodeInfo) => Promise<void>;
   syncOrganizationToMember?: (nodeInfo: PeerNodeInfo, targetRootId: string, organization: OrganizationRecord) => Promise<void>;
+  /** 成员随 pull 请求捎带的节点地址声明（邀请码引导回填）；校验落库由上层完成 */
+  onNodeInfoClaim?: (claim: unknown, context: { remotePeerId?: string }) => Promise<void>;
+  /** 从某 peer 成功拉取组织后回调，用于累计该 peer 的副本同步状态 */
+  onSyncState?: (peerId: string, orgId: string, versions: OrganizationSyncVersions) => Promise<void>;
 };
 
 type PullListRequest = {
@@ -24,6 +28,7 @@ type PullListRequest = {
   payload: {
     requesterRootId: string;
     requesterPeerId?: string;
+    nodeInfoClaim?: unknown;
   };
 };
 
@@ -156,6 +161,25 @@ export class OrgPullSyncService {
 
     if (request.type === 'org-pull-list') {
       const organizations = await this.listAllOrganizations();
+
+      // 仅当请求方确实是某个组织的成员（按 rootId 判定，兼容 peerId 变更后的重认领）
+      // 才处理其捎带的节点地址声明；否则未认证请求不得触发 claim 验签与落库扫描
+      if (request.payload.nodeInfoClaim && this.deps.onNodeInfoClaim) {
+        const isKnownMember = organizations.some((record) =>
+          Array.isArray(record?.members) && record.members.some((member: any) => member?.rootId === requesterRootId)
+        );
+        if (isKnownMember) {
+          try {
+            await this.deps.onNodeInfoClaim(request.payload.nodeInfoClaim, { remotePeerId: remotePeerId ?? undefined });
+          } catch (error) {
+            console.warn('[p2p][org-pull] node info claim handling failed', {
+              requesterRootId,
+              error: String(error)
+            });
+          }
+        }
+      }
+
       const visible = organizations
         .filter((record) => memberAuthStatus(record, requesterRootId, requesterPeerId).ok)
         .map((record) => ({
@@ -248,7 +272,27 @@ export class OrgPullSyncService {
     return record.sync?.versions ?? buildOrganizationSyncSnapshot(record).sync;
   }
 
-  async reconcileFromPeer(nodeInfo: PeerNodeInfo): Promise<{
+  /** 成功从某 peer 拉取组织后，把该 peer 的副本状态记账（失败仅记日志，不影响拉取结果） */
+  private async recordPullSyncState(nodeInfo: PeerNodeInfo, orgId: string, record: OrganizationRecord): Promise<void> {
+    if (!this.deps.onSyncState) {
+      return;
+    }
+    const peerId = extractPeerId(nodeInfo);
+    if (!peerId) {
+      return;
+    }
+    try {
+      await this.deps.onSyncState(peerId, orgId, this.resolveLocalVersions(record));
+    } catch (error) {
+      console.warn('[p2p][org-pull] sync state record failed', {
+        orgId,
+        peerId,
+        error: String(error)
+      });
+    }
+  }
+
+  async reconcileFromPeer(nodeInfo: PeerNodeInfo, extras?: { nodeInfoClaim?: unknown }): Promise<{
     checked: number;
     synced: number;
     removed: number;
@@ -268,7 +312,7 @@ export class OrgPullSyncService {
     const requesterPeerId = typeof node?.peerId?.toString === 'function' ? node.peerId.toString() : undefined;
     const listResponse = await this.requestDirect(nodeInfo, {
       type: 'org-pull-list',
-      payload: { requesterRootId: currentRootId, requesterPeerId }
+      payload: { requesterRootId: currentRootId, requesterPeerId, nodeInfoClaim: extras?.nodeInfoClaim }
     });
 
     const remoteVersions = new Map<string, OrganizationSyncVersions | undefined>();
@@ -315,6 +359,7 @@ export class OrgPullSyncService {
             await applyPluginDocSyncItems(this.deps.db, response.pluginDocs);
           }
           pulled += 1;
+          await this.recordPullSyncState(nodeInfo, orgId, merged);
           continue;
         }
 
@@ -403,6 +448,7 @@ export class OrgPullSyncService {
           await applyPluginDocSyncItems(this.deps.db, response.pluginDocs);
         }
         pulled += 1;
+        await this.recordPullSyncState(nodeInfo, orgId, merged);
       }
     }
 

@@ -8,6 +8,7 @@ import type { P2PIdentityContext } from './types';
 type P2PNodeRuntimeOptions = {
   appVersion?: string;
   onPeerVersionObserved?: (version: string, peerId: string) => Promise<void> | void;
+  onNodeInfoClaim?: (claim: unknown, context: { remotePeerId?: string }) => Promise<void>;
 };
 
 export type { LocalP2PNodeInfo, P2PIdentityContext, P2PMessageBody, PeerNodeInfo } from './types';

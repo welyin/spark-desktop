@@ -234,7 +234,7 @@ export type ElectronAPI = {
       adminCount: number;
     }>;
     delete: (orgId: string) => Promise<{ success: boolean }>;
-    addMember: (orgId: string, input: { rootId: string; nodeInfo: { peerId?: string; addresses: string[] } }) => Promise<{
+    addMember: (orgId: string, input: { rootId: string; nodeInfo?: { peerId?: string; addresses: string[] } }) => Promise<{
       orgId: string;
       name: string;
       description: string;
@@ -280,6 +280,21 @@ export type ElectronAPI = {
       memberCount: number;
       adminCount: number;
     }>;
+    createInvite: (orgId: string) => Promise<{ invite: string; orgId: string; orgName: string }>;
+    acceptInvite: (code: string) => Promise<{ orgId: string; orgName: string; memberCount: number }>;
+    getSyncOverview: (orgId: string) => Promise<{
+      orgId: string;
+      replicaTarget: number;
+      syncedPeers: number;
+      totalMembers: number;
+      members: Array<{
+        rootId: string;
+        peerId?: string;
+        isSelf: boolean;
+        everSynced: boolean;
+        lastSyncedAt: number | null;
+      }>;
+    } | null>;
   };
   rootIdentity: {
     status: () => Promise<{ initialized: boolean; unlocked: boolean; rootId: string | null }>;
@@ -416,8 +431,11 @@ const api = {
     listMine: () => ipcRenderer.invoke('org-list-mine'),
     create: (input: { name: string; description?: string; basePluginDomain: string }) => ipcRenderer.invoke('org-create', input),
     delete: (orgId: string) => ipcRenderer.invoke('org-delete', orgId),
-    addMember: (orgId: string, input: { rootId: string; nodeInfo: { peerId?: string; addresses: string[] } }) => ipcRenderer.invoke('org-add-member', orgId, input),
-    removeMember: (orgId: string, memberRootId: string) => ipcRenderer.invoke('org-remove-member', orgId, memberRootId)
+    addMember: (orgId: string, input: { rootId: string; nodeInfo?: { peerId?: string; addresses: string[] } }) => ipcRenderer.invoke('org-add-member', orgId, input),
+    removeMember: (orgId: string, memberRootId: string) => ipcRenderer.invoke('org-remove-member', orgId, memberRootId),
+    createInvite: (orgId: string) => ipcRenderer.invoke('org-invite-create', orgId),
+    acceptInvite: (code: string) => ipcRenderer.invoke('org-invite-accept', code),
+    getSyncOverview: (orgId: string) => ipcRenderer.invoke('org-sync-overview', orgId)
   },
   rootIdentity: {
     status: () => ipcRenderer.invoke('root-status'),

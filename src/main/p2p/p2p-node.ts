@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import type { LevelDB } from '../db/base';
 import { getEvidenceHeadHash } from '../db/evidence';
-import { DIRECT_ORG_SHARE_PROTOCOL, DIRECT_VERSION_PROTOCOL, P2P_DEFAULT_LISTEN_WS_PORT, P2P_LISTEN_WS_PORT } from './constants';
+import { DIRECT_ORG_SHARE_PROTOCOL, DIRECT_VERSION_PROTOCOL, ORG_META_PREFIX, P2P_DEFAULT_LISTEN_WS_PORT, P2P_LISTEN_WS_PORT } from './constants';
 import { getOrCreateLibp2pPrivateKey } from './identity-store';
 import { normalizePreferredPort, parseWsListenPort, pickListenPort } from './listen-port';
 import { PeerActivityStore } from './peer-activity-store';
@@ -15,6 +15,8 @@ const runtimeImport = new Function('specifier', 'return import(specifier)') as (
 type P2PRuntimeOptions = {
   appVersion?: string;
   onPeerVersionObserved?: (version: string, peerId: string) => Promise<void> | void;
+  /** 成员节点地址声明处理（邀请码引导回填），由装配层注入 organization 服务 */
+  onNodeInfoClaim?: (claim: unknown, context: { remotePeerId?: string }) => Promise<void>;
 };
 
 /**
@@ -54,7 +56,8 @@ export class P2PNode {
       getNode: () => this.node,
       connectPeer: async (nodeInfo) => this.connectPeer(nodeInfo),
       broadcast: async (topic, body) => this.broadcast(topic, body),
-      getTopicSubscribers: (topic) => this.getTopicSubscribers(topic)
+      getTopicSubscribers: (topic) => this.getTopicSubscribers(topic),
+      onNodeInfoClaim: runtimeOptions?.onNodeInfoClaim
     });
 
     const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
@@ -214,6 +217,140 @@ export class P2PNode {
       attempted: sorted.length,
       connected
     };
+  }
+
+  /**
+   * 保活 tick（由 KeepaliveScheduler 周期调用）：
+   * 1) 候选拨号：向最多 3 个未连接的组织成员节点发起连接；
+   * 2) 反熵拉取：从最多 2 个已连接候选拉取组织数据；
+   * 3) 管理员补副本：副本数不足 K 时向未同步成员推送快照（每组织最多 2 个）。
+   */
+  async maintainOrganizationNetwork(): Promise<{ dialed: number; pulled: number; replicaPushed: number }> {
+    if (!this.node) {
+      return { dialed: 0, pulled: 0, replicaPushed: 0 };
+    }
+    const currentRootId = await this.identityContext?.getCurrentRootId();
+    if (!currentRootId) {
+      return { dialed: 0, pulled: 0, replicaPushed: 0 };
+    }
+
+    const candidates = await this.peerActivity.collectOrganizationPeerCandidates(currentRootId);
+    if (candidates.length === 0) {
+      // 无任何可连接成员（都未回填地址）时，补副本也无的放矢，直接结束
+      return { dialed: 0, pulled: 0, replicaPushed: 0 };
+    }
+
+    const connectedPeers = new Set(this.getConnectedPeers());
+    const sorted = await this.peerActivity.sortCandidatesByPriority(candidates);
+
+    let dialed = 0;
+    const connectedCandidates: PeerNodeInfo[] = [];
+    for (const candidate of sorted) {
+      const peerId = extractPeerId(candidate);
+      if (peerId && connectedPeers.has(peerId)) {
+        connectedCandidates.push(candidate);
+        continue;
+      }
+      if (dialed >= 3) {
+        continue;
+      }
+      try {
+        await this.connectPeer(candidate);
+        await this.rememberPeerNodeInfo(candidate, 'success');
+        connectedCandidates.push(candidate);
+        dialed += 1;
+      } catch (error) {
+        await this.rememberPeerNodeInfo(candidate, 'failure', error);
+      }
+    }
+
+    let pulled = 0;
+    for (const candidate of connectedCandidates) {
+      if (pulled >= 2) {
+        break;
+      }
+      try {
+        await this.orgShare.pullOrganizationsForCurrentRootFromPeer(candidate);
+        pulled += 1;
+      } catch (error) {
+        console.warn('[p2p][keepalive] pull from candidate failed', {
+          peerId: candidate.peerId,
+          error: String(error)
+        });
+      }
+    }
+
+    const replicaPushed = await this.replenishOrganizationReplicas(currentRootId);
+
+    if (dialed > 0 || pulled > 0 || replicaPushed > 0) {
+      console.log('[p2p][keepalive] maintain organization network', { dialed, pulled, replicaPushed });
+    }
+
+    return { dialed, pulled, replicaPushed };
+  }
+
+  /** 管理员补副本：对副本不足的组织，向从未同步成功的成员推送快照（每组织最多 2 个）。 */
+  private async replenishOrganizationReplicas(currentRootId: string): Promise<number> {
+    const rows = await this.db.queryRange({
+      prefix: ORG_META_PREFIX,
+      start: ORG_META_PREFIX,
+      end: `${ORG_META_PREFIX}\xFF`
+    });
+
+    let pushed = 0;
+    for (const row of rows) {
+      let record: any;
+      try {
+        record = JSON.parse(row.value);
+      } catch {
+        continue;
+      }
+      if (!record?.orgId || !Array.isArray(record.members)) {
+        continue;
+      }
+      const me = record.members.find((member: any) => member?.rootId === currentRootId);
+      if (!me || me.role !== 'admin') {
+        continue;
+      }
+
+      const overview = await this.orgShare.getOrgSyncOverview(record.orgId);
+      if (!overview || overview.syncedPeers >= overview.replicaTarget) {
+        continue;
+      }
+
+      let pushedForOrg = 0;
+      for (const member of overview.members) {
+        if (pushedForOrg >= 2) {
+          break;
+        }
+        if (member.isSelf || member.everSynced) {
+          continue;
+        }
+        const recordMember = record.members.find((item: any) => item?.rootId === member.rootId);
+        const nodeInfo = recordMember?.nodeInfo;
+        const hasNodeInfo = nodeInfo && (nodeInfo.peerId || (Array.isArray(nodeInfo.addresses) && nodeInfo.addresses.length > 0));
+        if (!hasNodeInfo) {
+          continue;
+        }
+        try {
+          await this.orgShare.syncOrganizationToMember(
+            { peerId: nodeInfo.peerId, addresses: nodeInfo.addresses },
+            member.rootId,
+            record
+          );
+          pushedForOrg += 1;
+          pushed += 1;
+        } catch (error) {
+          console.warn('[p2p][keepalive] replica push failed', {
+            orgId: record.orgId,
+            targetRootId: member.rootId,
+            error: String(error)
+          });
+        }
+      }
+    }
+
+    return pushed;
   }
 
   /**
@@ -446,7 +583,7 @@ export class P2PNode {
   }
 
   /** 对外组织反熵拉取入口（委托给 orgShare 服务）。 */
-  async pullOrganizationsFromPeer(nodeInfo: PeerNodeInfo): Promise<{
+  async pullOrganizationsFromPeer(nodeInfo: PeerNodeInfo, extras?: { nodeInfoClaim?: unknown }): Promise<{
     checked: number;
     synced: number;
     removed: number;
@@ -455,7 +592,12 @@ export class P2PNode {
     pulled: number;
     skipped: number;
   }> {
-    return await this.orgShare.pullOrganizationsForCurrentRootFromPeer(nodeInfo);
+    return await this.orgShare.pullOrganizationsForCurrentRootFromPeer(nodeInfo, extras);
+  }
+
+  /** 组织副本概览（K 副本可见，委托给 orgShare 服务）。 */
+  async getOrgSyncOverview(orgId: string) {
+    return await this.orgShare.getOrgSyncOverview(orgId);
   }
 
   /** 清空本地保存的节点记录（用于测试页快速重置）。 */

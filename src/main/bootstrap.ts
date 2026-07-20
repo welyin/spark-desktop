@@ -1,7 +1,9 @@
-import { app } from 'electron';
+import { app, powerMonitor } from 'electron';
 import { levelDB, ensureSystemDomainInitialized } from './db';
 import { initP2PNode, getP2PNode, isP2PInitialized } from './p2p/index';
-import { OrganizationService } from './organization/index';
+import { KeepaliveScheduler } from './p2p/keepalive';
+import { buildNodeInfoClaimPayload, OrganizationService } from './organization/index';
+import type { NodeInfoClaim } from './organization/index';
 import { rootIdentityManager } from './identity';
 import { getUpdaterService } from './updater';
 
@@ -11,6 +13,9 @@ import { getUpdaterService } from './updater';
  * 组织服务单例与核心服务（LevelDB / P2P 节点）的启动编排集中在这里，
  * 避免 IPC 各模块各自维护启动逻辑。
  */
+
+/** 组织网络保活周期（60s）：候选拨号 + 反熵拉取 + 管理员补副本 */
+const ORG_KEEPALIVE_INTERVAL_MS = 60_000;
 
 export const organizationService = new OrganizationService(levelDB, {
   getCurrentRootId: async () => {
@@ -33,12 +38,77 @@ export const organizationService = new OrganizationService(levelDB, {
 
     await getP2PNode().syncOrganizationToMember(member.nodeInfo, targetRootId, organization);
   }
+}, {
+  // 邀请码引导加入：邀请人生码、被邀请人凭码直连回拉；
+  // 被邀请人随首次 pull 捎带签名 nodeInfoClaim，供管理员回填其节点地址
+  getLocalNodeInfo: async () => {
+    if (!isP2PInitialized()) {
+      return { peerId: null, addresses: [] };
+    }
+    const info = getP2PNode().getLocalNodeInfo();
+    return { peerId: info.peerId, addresses: info.addresses };
+  },
+  connectAndPull: async (nodeInfo, extras) => {
+    if (!isP2PInitialized() || !getP2PNode().isStarted()) {
+      throw new Error('P2P 网络未启动，无法通过邀请码加入');
+    }
+    const result = await getP2PNode().pullOrganizationsFromPeer(nodeInfo, extras);
+    return { pulled: result.pulled };
+  },
+  buildSelfNodeInfoClaim: async (): Promise<NodeInfoClaim | null> => {
+    if (!isP2PInitialized() || !getP2PNode().isStarted()) {
+      return null;
+    }
+    const status = await rootIdentityManager.getStatus();
+    const publicKey = rootIdentityManager.getUnlockedPublicKeyBase64();
+    if (!status.unlocked || !status.rootId || !publicKey) {
+      return null;
+    }
+    const local = getP2PNode().getLocalNodeInfo();
+    const unsigned = {
+      type: 'spark-node-info-claim' as const,
+      version: 1 as const,
+      rootId: status.rootId,
+      publicKey,
+      nodeInfo: { peerId: local.peerId ?? undefined, addresses: local.addresses },
+      timestamp: Date.now()
+    };
+    const signed = rootIdentityManager.signWithRootIdentity(buildNodeInfoClaimPayload(unsigned));
+    return { ...unsigned, signature: signed.signature };
+  }
 });
 
 let coreServicesLastError: string | null = null;
 
 export function getCoreServicesLastError(): string | null {
   return coreServicesLastError;
+}
+
+let orgKeepaliveScheduler: KeepaliveScheduler | null = null;
+let powerMonitorHooked = false;
+
+/** 幂等启动组织网络保活循环（p2p 启动后调用；db-close 时由 stopOrganizationKeepalive 停止） */
+function ensureOrganizationKeepaliveStarted(): void {
+  if (!orgKeepaliveScheduler) {
+    orgKeepaliveScheduler = new KeepaliveScheduler('org-network', ORG_KEEPALIVE_INTERVAL_MS, async () => {
+      if (isP2PInitialized() && getP2PNode().isStarted()) {
+        await getP2PNode().maintainOrganizationNetwork();
+      }
+    });
+  }
+  orgKeepaliveScheduler.start();
+
+  if (!powerMonitorHooked) {
+    powerMonitorHooked = true;
+    powerMonitor.on('resume', () => {
+      console.log('[main] system resumed, trigger organization keepalive tick');
+      orgKeepaliveScheduler?.notifyResumed();
+    });
+  }
+}
+
+export function stopOrganizationKeepalive(): void {
+  orgKeepaliveScheduler?.stop();
 }
 
 export async function ensureCoreServicesStarted(): Promise<void> {
@@ -64,6 +134,9 @@ export async function ensureCoreServicesStarted(): Promise<void> {
         onPeerVersionObserved: async (version, peerId) => {
           console.log('[main] observed peer app version', { peerId, version });
           await getUpdaterService().observePeerVersion(version, peerId);
+        },
+        onNodeInfoClaim: async (claim, context) => {
+          await organizationService.applyNodeInfoClaim(claim as NodeInfoClaim, context);
         }
       });
       console.log('[main] p2p node initialized with db');
@@ -73,6 +146,8 @@ export async function ensureCoreServicesStarted(): Promise<void> {
       await getP2PNode().start();
       console.log('[main] p2p node started automatically');
     }
+
+    ensureOrganizationKeepaliveStarted();
 
     coreServicesLastError = null;
   } catch (error) {

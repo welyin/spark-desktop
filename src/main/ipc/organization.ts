@@ -1,5 +1,6 @@
 import { isKnownPluginDomain } from '../plugins/catalog';
 import { organizationService } from '../bootstrap';
+import { getP2PNode, isP2PInitialized } from '../p2p/index';
 import { registerInvokeHandler, requireSystemDomain } from './helpers';
 
 /**
@@ -24,7 +25,7 @@ export function registerOrganizationHandlers(): void {
     return await organizationService.deleteOrganization(orgId);
   });
 
-  registerInvokeHandler('org-add-member', async (event, orgId: string, input: { rootId: string; nodeInfo: { peerId?: string; addresses: string[] } }) => {
+  registerInvokeHandler('org-add-member', async (event, orgId: string, input: { rootId: string; nodeInfo?: { peerId?: string; addresses: string[] } }) => {
     requireSystemDomain(event);
     return await organizationService.addMember(orgId, input);
   });
@@ -32,5 +33,23 @@ export function registerOrganizationHandlers(): void {
   registerInvokeHandler('org-remove-member', async (event, orgId: string, memberRootId: string) => {
     requireSystemDomain(event);
     return await organizationService.removeMember(orgId, memberRootId);
+  });
+
+  registerInvokeHandler('org-invite-create', async (event, orgId: string) => {
+    requireSystemDomain(event);
+    return await organizationService.createOrgInvite(orgId);
+  });
+
+  registerInvokeHandler('org-invite-accept', async (event, code: string) => {
+    requireSystemDomain(event);
+    return await organizationService.acceptOrgInvite(code);
+  });
+
+  registerInvokeHandler('org-sync-overview', async (event, orgId: string) => {
+    requireSystemDomain(event);
+    if (!isP2PInitialized()) {
+      return null;
+    }
+    return await getP2PNode().getOrgSyncOverview(orgId);
   });
 }

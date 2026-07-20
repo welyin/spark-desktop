@@ -1,8 +1,8 @@
 import crypto from 'crypto';
 import type { LevelDB } from '../db/base';
-import { DIRECT_ORG_SHARE_PROTOCOL } from './constants';
+import { DIRECT_ORG_SHARE_PROTOCOL, ORG_META_PREFIX, ORG_REPLICA_FRESH_WINDOW_MS, ORG_REPLICA_TARGET } from './constants';
 import { buildDialTargets, extractPeerId } from './peer-targets';
-import { buildOrganizationSyncSnapshot, isOrganizationSyncStale, mergeOrganizationSyncSnapshot, type OrganizationSyncSnapshot, type OrganizationSyncVersions } from '../organization/sync';
+import { buildOrganizationSyncSnapshot, buildOrganizationSyncVersions, isOrganizationSyncStale, mergeOrganizationSyncSnapshot, type OrganizationSyncSnapshot, type OrganizationSyncVersions } from '../organization/sync';
 import { OrgShareSessionState } from './org-share-session';
 import { OrgPullSyncService } from './org-pull-sync';
 import { normalizeIncomingSnapshot } from './org-share-snapshot';
@@ -24,6 +24,8 @@ type OrgShareDependencies = {
   connectPeer: (nodeInfo: PeerNodeInfo) => Promise<void>;
   broadcast: (topic: string, body: any) => Promise<void>;
   getTopicSubscribers: (topic: string) => string[];
+  /** 成员节点地址声明处理（邀请码引导回填），由装配层注入 organization 服务 */
+  onNodeInfoClaim?: (claim: unknown, context: { remotePeerId?: string }) => Promise<void>;
 };
 
 type OrgSyncState = {
@@ -52,7 +54,9 @@ export class OrgShareSyncService {
       getNode: this.deps.getNode,
       connectPeer: this.deps.connectPeer,
       syncOrganizationToMember: async (nodeInfo, targetRootId, organization) =>
-        this.syncOrganizationToMember(nodeInfo, targetRootId, organization)
+        this.syncOrganizationToMember(nodeInfo, targetRootId, organization),
+      onNodeInfoClaim: this.deps.onNodeInfoClaim,
+      onSyncState: async (peerId, orgId, versions) => this.saveOrgSyncState(peerId, orgId, versions)
     });
   }
 
@@ -85,8 +89,90 @@ export class OrgShareSyncService {
     this.sessionState.markAck(syncId);
   }
 
-  async pullOrganizationsForCurrentRootFromPeer(nodeInfo: PeerNodeInfo): Promise<Awaited<ReturnType<OrgPullSyncService['reconcileFromPeer']>>> {
-    return await this.pullSync.reconcileFromPeer(nodeInfo);
+  async pullOrganizationsForCurrentRootFromPeer(
+    nodeInfo: PeerNodeInfo,
+    extras?: { nodeInfoClaim?: unknown }
+  ): Promise<Awaited<ReturnType<OrgPullSyncService['reconcileFromPeer']>>> {
+    return await this.pullSync.reconcileFromPeer(nodeInfo, extras);
+  }
+
+  /**
+   * 组织副本概览（K 副本可见）：
+   * 聚合本机 org 记录与逐成员 sync-state，给出"已有多少节点持有该组织副本"。
+   * 计入副本的判定（本机恒算一个）：
+   * - 最近窗口（ORG_REPLICA_FRESH_WINDOW_MS）内同步过；或
+   * - sync-state 版本仍覆盖当前组织版本（静默组织的健康副本不会因 TTL 误判过期）。
+   * 两者都不满足视为历史触达，不计入，由管理员补副本机制重新触达。
+   */
+  async getOrgSyncOverview(orgId: string): Promise<{
+    orgId: string;
+    replicaTarget: number;
+    syncedPeers: number;
+    totalMembers: number;
+    members: Array<{
+      rootId: string;
+      peerId?: string;
+      isSelf: boolean;
+      everSynced: boolean;
+      lastSyncedAt: number | null;
+    }>;
+  } | null> {
+    const raw = await this.deps.db.get(`${ORG_META_PREFIX}${orgId}`);
+    if (!raw) {
+      return null;
+    }
+
+    let record: any;
+    try {
+      record = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+
+    const currentRootId = await this.deps.identityContext?.getCurrentRootId();
+    const currentVersions: OrganizationSyncVersions | undefined = record?.sync?.versions
+      ?? (typeof record?.updatedAt === 'number' ? buildOrganizationSyncVersions(record) : undefined);
+    const now = Date.now();
+    const members = Array.isArray(record?.members) ? record.members : [];
+    const overviewMembers: Array<{
+      rootId: string;
+      peerId?: string;
+      isSelf: boolean;
+      everSynced: boolean;
+      lastSyncedAt: number | null;
+    }> = [];
+    let syncedPeers = 0;
+
+    for (const member of members) {
+      const rootId = typeof member?.rootId === 'string' ? member.rootId : '';
+      if (!rootId) {
+        continue;
+      }
+      const peerId = member?.nodeInfo?.peerId?.trim?.() || undefined;
+      const isSelf = Boolean(currentRootId) && rootId === currentRootId;
+      const state = peerId ? await this.getOrgSyncState(peerId, orgId) : null;
+      const recentlySynced = Boolean(state) && now - state!.lastSyncedAt <= ORG_REPLICA_FRESH_WINDOW_MS;
+      const coversCurrent = Boolean(state && currentVersions) && !isOrganizationSyncStale(state!.versions, currentVersions!);
+      const everSynced = isSelf || recentlySynced || coversCurrent;
+      if (everSynced) {
+        syncedPeers += 1;
+      }
+      overviewMembers.push({
+        rootId,
+        peerId,
+        isSelf,
+        everSynced,
+        lastSyncedAt: state?.lastSyncedAt ?? null
+      });
+    }
+
+    return {
+      orgId,
+      replicaTarget: ORG_REPLICA_TARGET,
+      syncedPeers,
+      totalMembers: overviewMembers.length,
+      members: overviewMembers
+    };
   }
 
   async applyIncomingOrgShare(payload: any, source: 'pubsub' | 'direct'): Promise<{

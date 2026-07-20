@@ -127,7 +127,7 @@ function deriveSlip10Path(seed: Buffer, derivationPath: string): Slip10Node {
   return node;
 }
 
-function sha256Hex(data: Buffer | string): string {
+export function sha256Hex(data: Buffer | string): string {
   return createHash('sha256').update(data).digest('hex');
 }
 
@@ -293,6 +293,28 @@ export class RootIdentityManager {
       rootId: unlocked.rootId,
       signature: Buffer.from(signature).toString('base64'),
       payloadHash: sha256Hex(bytes)
+    };
+  }
+
+  /** 当前已解锁身份的根公钥（base64）；锁定时返回 null。用于构造需携带公钥的签名载荷（如 nodeInfoClaim）。 */
+  getUnlockedPublicKeyBase64(): string | null {
+    return this.unlockedIdentity ? this.unlockedIdentity.publicKey.toString('base64') : null;
+  }
+
+  /**
+   * 使用根身份私钥签名并附带回执公钥。
+   * 与 sign() 的区别是返回公钥：校验方可用 sha256(publicKey) === rootId 自包含地
+   * 验证签名者身份（用于 nodeInfoClaim 这类需要绑定 rootId ↔ 公钥的场景）。
+   */
+  signWithRootIdentity(payload: string | Buffer): { rootId: string; publicKey: string; signature: string } {
+    const unlocked = this.requireUnlocked();
+    const bytes = Buffer.isBuffer(payload) ? payload : Buffer.from(payload, 'utf8');
+    const signature = nacl.sign.detached(new Uint8Array(bytes), unlocked.signingSecretKey);
+
+    return {
+      rootId: unlocked.rootId,
+      publicKey: unlocked.publicKey.toString('base64'),
+      signature: Buffer.from(signature).toString('base64')
     };
   }
 
