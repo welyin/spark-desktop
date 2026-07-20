@@ -5,243 +5,263 @@
         <div>
           <p class="eyebrow">组织管理</p>
           <h1>组织</h1>
-          <p class="lede">创建组织后，你会默认加入并成为管理员。只有管理员可以删除组织、添加成员和删除成员。</p>
+          <p class="lede">创建组织后你会默认成为管理员。邀请成员先预录入 RootID，再把邀请码发给对方。</p>
         </div>
-        <el-row :gutter="12" class="hero-stats">
-          <el-col :span="12">
-            <el-statistic title="我所属的组织" :value="organizations.length" />
-          </el-col>
-          <el-col :span="12">
-            <el-statistic title="我担任管理员" :value="adminOrgCount" />
-          </el-col>
-        </el-row>
+        <div class="hero-side">
+          <el-row :gutter="12" class="hero-stats">
+            <el-col :span="12">
+              <el-statistic title="我所属的组织" :value="organizations.length" />
+            </el-col>
+            <el-col :span="12">
+              <el-statistic title="我担任管理员" :value="adminOrgCount" />
+            </el-col>
+          </el-row>
+          <div class="hero-actions">
+            <el-button type="primary" @click="openCreateDialog">创建组织</el-button>
+            <el-button @click="openJoinDialog">邀请码加入</el-button>
+            <el-button text type="primary" @click="refreshOrganizations">刷新</el-button>
+          </div>
+        </div>
       </div>
     </el-card>
 
-    <el-row :gutter="16" class="content-row">
-      <el-col :lg="8" :md="10" :sm="24" :xs="24">
-        <el-card shadow="never" class="panel-card">
-          <template #header>
-            <h2>创建组织</h2>
-          </template>
+    <el-card shadow="never" class="panel-card">
+      <template #header>
+        <h2>我的组织</h2>
+      </template>
 
-          <el-form label-position="top">
-            <el-form-item label="组织名称">
-              <el-input v-model="createForm.name" placeholder="例如：产品组" />
-            </el-form-item>
-            <el-form-item label="基础插件">
-              <el-select v-model="createForm.basePluginDomain" placeholder="请选择组织基础插件" style="width: 100%">
-                <el-option
-                  v-for="plugin in foundationPlugins"
-                  :key="plugin.domain"
-                  :label="`${plugin.name} (${plugin.domain})`"
-                  :value="plugin.domain"
-                />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="组织描述">
-              <el-input
-                v-model="createForm.description"
-                type="textarea"
-                :rows="3"
-                placeholder="可选，描述组织用途"
-              />
-            </el-form-item>
-            <el-button type="primary" :loading="creating" @click="createOrganization">
-              {{ creating ? '创建中...' : '创建组织' }}
-            </el-button>
-          </el-form>
-
-          <p class="hint">创建人会自动成为该组织的管理员和首位成员。组织必须绑定一个基础插件。</p>
-          <el-alert v-if="message" :title="message" type="info" :closable="false" show-icon />
-        </el-card>
-
-        <el-card shadow="never" class="panel-card">
-          <template #header>
-            <h2>通过邀请码加入</h2>
-          </template>
-          <el-form label-position="top">
-            <el-form-item label="邀请码">
-              <el-input
-                v-model="inviteCodeInput"
-                type="textarea"
-                :rows="3"
-                placeholder="粘贴管理员分享给你的邀请码"
-              />
-            </el-form-item>
-            <el-button type="primary" :loading="acceptingInvite" @click="acceptInvite">
-              {{ acceptingInvite ? '加入中...' : '加入组织' }}
-            </el-button>
-          </el-form>
-          <p class="hint">加入前提：管理员已先将你的 RootID 录入组织成员。邀请码用于连接管理员节点并拉取组织数据。</p>
-        </el-card>
-      </el-col>
-
-      <el-col :lg="16" :md="14" :sm="24" :xs="24">
-        <el-card shadow="never" class="panel-card">
-          <template #header>
-            <div class="header-row">
-              <h2>我的组织</h2>
-              <el-button text type="primary" @click="refreshOrganizations">刷新</el-button>
-            </div>
-          </template>
-
-          <el-empty v-if="loading" description="正在加载组织..." />
-          <el-empty v-else-if="organizations.length === 0" description="你还没有加入任何组织。先创建一个组织吧。" />
-          <el-scrollbar v-else max-height="230px">
-            <div class="org-list">
-              <el-card
-                v-for="organization in organizations"
-                :key="organization.orgId"
-                shadow="hover"
-                class="org-item"
-                :class="{ active: selectedOrgId === organization.orgId }"
-                @click="selectOrganization(organization)"
-              >
-                <div class="org-item-top">
-                  <strong>{{ organization.name }}</strong>
-                  <el-tag :type="organization.isCurrentUserAdmin ? 'danger' : 'info'">
-                    {{ organization.isCurrentUserAdmin ? '管理员' : '成员' }}
-                  </el-tag>
-                </div>
-                <p class="org-desc">{{ organization.description || '暂无描述' }}</p>
-                <div class="org-meta">
-                  <span>{{ organization.memberCount }} 人</span>
-                  <span>{{ organization.adminCount }} 管理员</span>
-                  <span>基础插件：{{ organization.basePluginDomain || '-' }}</span>
-                </div>
-              </el-card>
-            </div>
-          </el-scrollbar>
-        </el-card>
-
-        <el-card v-if="selectedOrganization" shadow="never" class="panel-card detail-card">
-          <template #header>
-            <div class="header-row">
-              <div>
-                <p class="eyebrow">组织详情</p>
-                <h2>{{ selectedOrganization.name }}</h2>
-                <p class="lede">{{ selectedOrganization.description || '暂无描述' }}</p>
-              </div>
-              <el-tag :type="selectedOrganization.isCurrentUserAdmin ? 'danger' : 'info'">
-                {{ selectedOrganization.isCurrentUserAdmin ? '管理员' : '成员' }}
-              </el-tag>
-            </div>
-          </template>
-
-          <el-descriptions :column="2" border>
-            <el-descriptions-item label="组织 ID">{{ selectedOrganization.orgId }}</el-descriptions-item>
-            <el-descriptions-item label="创建者">{{ selectedOrganization.createdBy }}</el-descriptions-item>
-            <el-descriptions-item label="基础插件">{{ selectedOrganization.basePluginDomain || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="成员数">{{ selectedOrganization.memberCount }}</el-descriptions-item>
-            <el-descriptions-item label="管理员数">{{ selectedOrganization.adminCount }}</el-descriptions-item>
-          </el-descriptions>
-
-          <div v-if="syncOverview" class="replica-row">
-            <el-tag :type="syncOverview.syncedPeers >= syncOverview.replicaTarget ? 'success' : 'warning'">
-              副本 {{ syncOverview.syncedPeers }}/{{ syncOverview.replicaTarget }}
+      <el-empty v-if="loading" description="正在加载组织..." />
+      <el-empty v-else-if="organizations.length === 0" description="你还没有加入任何组织。创建或凭邀请码加入一个吧。" />
+      <div v-else class="org-grid">
+        <el-card
+          v-for="organization in organizations"
+          :key="organization.orgId"
+          shadow="hover"
+          class="org-item"
+          @click="openDetail(organization)"
+        >
+          <div class="org-item-top">
+            <strong>{{ organization.name }}</strong>
+            <el-tag :type="organization.isCurrentUserAdmin ? 'danger' : 'info'">
+              {{ organization.isCurrentUserAdmin ? '管理员' : '成员' }}
             </el-tag>
-            <span class="replica-hint">
-              {{ syncOverview.syncedPeers >= syncOverview.replicaTarget ? '副本充足' : '副本不足，建议成员保持在线或邀请更多节点' }}
-              （已同步节点 {{ syncOverview.syncedPeers }} / 成员 {{ syncOverview.totalMembers }}）
-            </span>
           </div>
-
-          <h3 class="section-title">成员列表</h3>
-          <el-table :data="selectedOrganization.members" stripe>
-            <el-table-column prop="rootId" label="RootID" min-width="280" />
-            <el-table-column label="角色" width="120">
-              <template #default="scope">
-                <el-tag :type="scope.row.role === 'admin' ? 'danger' : 'info'">
-                  {{ scope.row.role === 'admin' ? '管理员' : '成员' }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="加入时间" min-width="160">
-              <template #default="scope">{{ formatDate(scope.row.joinedAt) }}</template>
-            </el-table-column>
-            <el-table-column label="PeerId" min-width="240">
-              <template #default="scope">{{ scope.row.nodeInfo?.peerId || '-' }}</template>
-            </el-table-column>
-            <el-table-column label="节点地址" min-width="260">
-              <template #default="scope">{{ (scope.row.nodeInfo?.addresses || []).join(' , ') || '-' }}</template>
-            </el-table-column>
-            <el-table-column label="最近同步" min-width="160">
-              <template #default="scope">{{ memberSyncLabel(scope.row.rootId) }}</template>
-            </el-table-column>
-          </el-table>
-
-          <section v-if="selectedOrganization.isCurrentUserAdmin" class="admin-actions">
-            <h3 class="section-title">管理员操作</h3>
-
-            <el-card shadow="never" class="inner-op-card">
-              <template #header>
-                <h4>添加成员（预录入）</h4>
-              </template>
-              <el-form label-position="top">
-                <el-form-item label="添加成员 RootID">
-                  <el-input v-model="addMemberRootId" placeholder="64 位 RootID" />
-                </el-form-item>
-                <el-form-item label="成员 PeerId（可选）">
-                  <el-input v-model="addMemberPeerId" placeholder="例如：12D3KooW..." />
-                </el-form-item>
-                <el-form-item label="成员节点地址（可选，可多条，逗号/分号/换行分隔）">
-                  <el-input
-                    v-model="addMemberAddresses"
-                    type="textarea"
-                    :rows="3"
-                    placeholder="例如：/ip4/127.0.0.1/tcp/15002/ws"
-                  />
-                </el-form-item>
-                <el-button type="primary" :loading="busyAction === 'add'" @click="addMember">
-                  {{ busyAction === 'add' ? '添加中...' : '添加成员' }}
-                </el-button>
-              </el-form>
-              <p class="hint">只填 RootID 即可预录入；对方凭邀请码加入时会自动回填节点地址。</p>
-            </el-card>
-
-            <el-card shadow="never" class="inner-op-card">
-              <template #header>
-                <h4>邀请成员</h4>
-              </template>
-              <p class="hint">预录入成员 RootID 后生成邀请码，经线下渠道发给对方；对方凭码连接你的节点完成加入（你需要保持在线）。</p>
-              <el-button type="primary" plain :loading="busyAction === 'invite'" @click="createInvite">
-                {{ busyAction === 'invite' ? '生成中...' : '生成邀请码' }}
-              </el-button>
-              <div v-if="generatedInvite" class="invite-result">
-                <el-input v-model="generatedInvite" type="textarea" :rows="3" readonly />
-                <el-button size="small" @click="copyInvite">复制邀请码</el-button>
-              </div>
-            </el-card>
-
-            <el-card shadow="never" class="inner-op-card">
-              <template #header>
-                <h4>删除成员</h4>
-              </template>
-              <el-form label-position="top">
-                <el-form-item label="删除成员 RootID">
-                  <el-input v-model="removeMemberRootId" placeholder="64 位 RootID" />
-                </el-form-item>
-                <el-button type="danger" :loading="busyAction === 'remove'" @click="removeMember">
-                  {{ busyAction === 'remove' ? '删除中...' : '删除成员' }}
-                </el-button>
-              </el-form>
-            </el-card>
-
-            <el-button type="danger" plain :loading="busyAction === 'delete'" @click="deleteOrganization">
-              {{ busyAction === 'delete' ? '删除中...' : '删除组织' }}
+          <p class="org-desc">{{ organization.description || '暂无描述' }}</p>
+          <div class="org-meta">
+            <span>{{ organization.memberCount }} 人</span>
+            <span>{{ organization.adminCount }} 管理员</span>
+            <el-tag
+              v-if="overviewOf(organization.orgId)"
+              size="small"
+              :type="replicaTagType(overviewOf(organization.orgId))"
+            >
+              {{ replicaLabel(overviewOf(organization.orgId)) }}
+            </el-tag>
+          </div>
+          <div class="org-item-actions">
+            <el-button
+              v-if="organization.basePluginDomain"
+              text
+              type="primary"
+              size="small"
+              @click.stop="openOrgPlugin(organization)"
+            >
+              打开插件
             </el-button>
-          </section>
-
-          <el-alert v-else title="当前用户不是管理员，只能查看成员列表。" type="warning" :closable="false" show-icon />
+            <span class="org-plugin-domain">{{ organization.basePluginDomain || '-' }}</span>
+          </div>
         </el-card>
+      </div>
+    </el-card>
 
-        <el-card v-else shadow="never" class="panel-card">
-          <h2>组织详情</h2>
-          <p>从左侧选择一个组织查看成员与管理操作。</p>
-        </el-card>
-      </el-col>
-    </el-row>
+    <!-- 创建组织对话框 -->
+    <el-dialog v-model="createDialogVisible" title="创建组织" width="520px">
+      <el-form label-position="top">
+        <el-form-item label="组织名称">
+          <el-input v-model="createForm.name" placeholder="例如：产品组" />
+        </el-form-item>
+        <el-form-item label="基础插件">
+          <el-select v-model="createForm.basePluginDomain" placeholder="请选择组织基础插件" style="width: 100%">
+            <el-option
+              v-for="plugin in foundationPlugins"
+              :key="plugin.domain"
+              :label="`${plugin.name} (${plugin.domain})`"
+              :value="plugin.domain"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="组织描述">
+          <el-input
+            v-model="createForm.description"
+            type="textarea"
+            :rows="3"
+            placeholder="可选，描述组织用途"
+          />
+        </el-form-item>
+      </el-form>
+      <p class="hint">创建人会自动成为该组织的管理员和首位成员。组织必须绑定一个基础插件。</p>
+      <template #footer>
+        <el-button @click="createDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="creating" @click="createOrganization">
+          {{ creating ? '创建中...' : '创建组织' }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 邀请码加入对话框 -->
+    <el-dialog v-model="joinDialogVisible" title="通过邀请码加入" width="520px">
+      <el-form label-position="top">
+        <el-form-item label="邀请码">
+          <el-input
+            v-model="joinCode"
+            type="textarea"
+            :rows="4"
+            placeholder="粘贴管理员分享给你的邀请码"
+          />
+        </el-form-item>
+      </el-form>
+      <p class="hint">加入前提：管理员已先将你的 RootID 录入组织成员。邀请码 24 小时内有效，用于连接管理员节点并拉取组织数据。</p>
+      <template #footer>
+        <el-button @click="joinDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="joining" @click="acceptInvite">
+          {{ joining ? '加入中...' : '加入组织' }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 邀请成员对话框（两步：预录入 -> 生成邀请码） -->
+    <el-dialog v-model="inviteDialogVisible" title="邀请成员" width="520px" @closed="resetInviteDialog">
+      <template v-if="!inviteResult">
+        <el-form label-position="top">
+          <el-form-item label="成员 RootID">
+            <el-input v-model="inviteRootId" placeholder="64 位 RootID" />
+          </el-form-item>
+          <el-collapse class="invite-advanced">
+            <el-collapse-item title="高级选项：对方节点信息（可选）" name="advanced">
+              <el-form-item label="成员 PeerId（可选）">
+                <el-input v-model="invitePeerId" placeholder="例如：12D3KooW..." />
+              </el-form-item>
+              <el-form-item label="成员节点地址（可选，可多条，逗号/分号/换行分隔）">
+                <el-input
+                  v-model="inviteAddresses"
+                  type="textarea"
+                  :rows="3"
+                  placeholder="例如：/ip4/127.0.0.1/tcp/15002/ws"
+                />
+              </el-form-item>
+            </el-collapse-item>
+          </el-collapse>
+        </el-form>
+        <p class="hint">只填 RootID 即可预录入；对方凭邀请码加入时会自动回填节点地址。</p>
+      </template>
+      <template v-else>
+        <el-alert title="成员已预录入，邀请码已生成" type="success" :closable="false" show-icon />
+        <el-form label-position="top" class="invite-result">
+          <el-form-item label="邀请码（24 小时内有效）">
+            <el-input v-model="inviteResult" type="textarea" :rows="4" readonly />
+          </el-form-item>
+        </el-form>
+        <p class="hint">请通过线下渠道（微信/当面）把邀请码发给对方；对方凭码连接你的节点完成加入，期间你需要保持在线。</p>
+      </template>
+      <template #footer>
+        <template v-if="!inviteResult">
+          <el-button @click="inviteDialogVisible = false">取消</el-button>
+          <el-button type="primary" :loading="inviting" @click="addMemberAndInvite">
+            {{ inviting ? '处理中...' : '添加并生成邀请码' }}
+          </el-button>
+        </template>
+        <template v-else>
+          <el-button @click="inviteDialogVisible = false">完成</el-button>
+          <el-button type="primary" @click="copyInvite">复制邀请码</el-button>
+        </template>
+      </template>
+    </el-dialog>
+
+    <!-- 组织详情抽屉 -->
+    <el-drawer v-model="drawerVisible" size="min(640px, 94%)" :with-header="false">
+      <div v-if="selectedOrganization" class="drawer-body">
+        <div class="drawer-header">
+          <div>
+            <p class="eyebrow">组织详情</p>
+            <h2>{{ selectedOrganization.name }}</h2>
+            <p class="lede">{{ selectedOrganization.description || '暂无描述' }}</p>
+          </div>
+          <el-tag :type="selectedOrganization.isCurrentUserAdmin ? 'danger' : 'info'">
+            {{ selectedOrganization.isCurrentUserAdmin ? '管理员' : '成员' }}
+          </el-tag>
+        </div>
+
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="组织 ID">{{ selectedOrganization.orgId }}</el-descriptions-item>
+          <el-descriptions-item label="创建者">{{ selectedOrganization.createdBy }}</el-descriptions-item>
+          <el-descriptions-item label="基础插件">{{ selectedOrganization.basePluginDomain || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="成员数">{{ selectedOrganization.memberCount }}</el-descriptions-item>
+          <el-descriptions-item label="管理员数">{{ selectedOrganization.adminCount }}</el-descriptions-item>
+          <el-descriptions-item label="最近更新">{{ formatDate(selectedOrganization.updatedAt) }}</el-descriptions-item>
+        </el-descriptions>
+
+        <div v-if="currentOverview" class="replica-row">
+          <el-tag :type="replicaTagType(currentOverview)">{{ replicaLabel(currentOverview) }}</el-tag>
+          <span class="replica-hint">
+            {{ currentOverview.syncedPeers >= currentOverview.replicaTarget ? '副本充足' : '副本不足，建议成员保持在线或邀请更多节点' }}
+            （已同步节点 {{ currentOverview.syncedPeers }} / 成员 {{ currentOverview.totalMembers }}）
+          </span>
+        </div>
+
+        <h3 class="section-title">成员列表</h3>
+        <el-table :data="selectedOrganization.members" stripe>
+          <el-table-column prop="rootId" label="RootID" min-width="240" />
+          <el-table-column label="角色" width="100">
+            <template #default="scope">
+              <el-tag :type="scope.row.role === 'admin' ? 'danger' : 'info'">
+                {{ scope.row.role === 'admin' ? '管理员' : '成员' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="加入时间" min-width="150">
+            <template #default="scope">{{ formatDate(scope.row.joinedAt) }}</template>
+          </el-table-column>
+          <el-table-column label="PeerId" min-width="200">
+            <template #default="scope">{{ scope.row.nodeInfo?.peerId || '-' }}</template>
+          </el-table-column>
+          <el-table-column label="最近同步" min-width="140">
+            <template #default="scope">{{ memberSyncLabel(scope.row.rootId) }}</template>
+          </el-table-column>
+          <el-table-column v-if="selectedOrganization.isCurrentUserAdmin" label="操作" width="90" fixed="right">
+            <template #default="scope">
+              <el-button
+                v-if="scope.row.rootId !== currentRootId"
+                text
+                type="danger"
+                size="small"
+                :loading="removingRootId === scope.row.rootId"
+                @click="removeMember(scope.row)"
+              >
+                移除
+              </el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <div v-if="selectedOrganization.isCurrentUserAdmin" class="drawer-actions">
+          <el-button type="primary" @click="openInviteDialog">邀请成员</el-button>
+          <el-button v-if="selectedOrganization.basePluginDomain" @click="openOrgPlugin(selectedOrganization)">
+            打开插件
+          </el-button>
+          <el-button type="danger" plain :loading="deleting" @click="deleteOrganization">
+            {{ deleting ? '删除中...' : '删除组织' }}
+          </el-button>
+        </div>
+        <el-alert
+          v-else
+          title="当前用户不是管理员，只能查看成员列表。"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="drawer-alert"
+        />
+      </div>
+    </el-drawer>
   </section>
 </template>
 
@@ -310,21 +330,29 @@ export default defineComponent({
   emits: ['open-plugin-tab'],
   setup(_, { emit }) {
     const organizations = ref<OrganizationView[]>([]);
+    const overviews = ref<Record<string, OrgSyncOverview | null>>({});
     const selectedOrgId = ref('');
+    const currentRootId = ref('');
     const loading = ref(false);
+
+    const createDialogVisible = ref(false);
+    const joinDialogVisible = ref(false);
+    const inviteDialogVisible = ref(false);
+    const drawerVisible = ref(false);
+
     const creating = ref(false);
-    const busyAction = ref<'add' | 'remove' | 'delete' | 'invite' | ''>('');
-    const message = ref('');
+    const joining = ref(false);
+    const inviting = ref(false);
+    const deleting = ref(false);
+    const removingRootId = ref('');
+
     const pluginCatalog = ref<PluginCatalogItem[]>([]);
-    const addMemberRootId = ref('');
-    const addMemberPeerId = ref('');
-    const addMemberAddresses = ref('');
-    const removeMemberRootId = ref('');
     const createForm = ref<CreateForm>({ name: '', description: '', basePluginDomain: '' });
-    const inviteCodeInput = ref('');
-    const acceptingInvite = ref(false);
-    const generatedInvite = ref('');
-    const syncOverview = ref<OrgSyncOverview | null>(null);
+    const joinCode = ref('');
+    const inviteRootId = ref('');
+    const invitePeerId = ref('');
+    const inviteAddresses = ref('');
+    const inviteResult = ref('');
 
     const foundationPlugins = computed(() => {
       return pluginCatalog.value.filter((plugin) => plugin.category === 'foundation');
@@ -334,55 +362,60 @@ export default defineComponent({
       return organizations.value.find((organization) => organization.orgId === selectedOrgId.value) ?? null;
     });
 
-    const refreshSyncOverview = async () => {
-      if (!selectedOrgId.value) {
-        syncOverview.value = null;
-        return;
-      }
-      try {
-        syncOverview.value = await window.electronAPI.organization.getSyncOverview(selectedOrgId.value);
-      } catch {
-        syncOverview.value = null;
-      }
-    };
-
-    const selectOrganization = (organization: OrganizationView) => {
-      selectedOrgId.value = organization.orgId;
-      generatedInvite.value = '';
-      void refreshSyncOverview();
-
-      if (!organization.basePluginDomain) {
-        return;
-      }
-
-      emit('open-plugin-tab', {
-        pluginDomain: organization.basePluginDomain,
-        pluginView: 'default',
-        title: `${organization.name} · 插件`,
-        icon: '基',
-        pluginContext: {
-          orgId: organization.orgId
-        }
-      });
-    };
-
+    const currentOverview = computed(() => {
+      return selectedOrgId.value ? overviews.value[selectedOrgId.value] ?? null : null;
+    });
 
     const adminOrgCount = computed(() => {
       return organizations.value.filter((organization) => organization.isCurrentUserAdmin).length;
     });
 
+    const overviewOf = (orgId: string) => {
+      return overviews.value[orgId] ?? null;
+    };
+
+    const replicaLabel = (overview: OrgSyncOverview | null) => {
+      if (!overview) {
+        return '';
+      }
+      return `副本 ${overview.syncedPeers}/${overview.replicaTarget}`;
+    };
+
+    const replicaTagType = (overview: OrgSyncOverview | null) => {
+      if (!overview) {
+        return 'info';
+      }
+      return overview.syncedPeers >= overview.replicaTarget ? 'success' : 'warning';
+    };
+
+    const loadCurrentRootId = async () => {
+      try {
+        const status = await window.electronAPI.rootIdentity.status();
+        currentRootId.value = status.rootId ?? '';
+      } catch {
+        currentRootId.value = '';
+      }
+    };
+
     const refreshOrganizations = async () => {
       loading.value = true;
-      message.value = '';
       try {
         organizations.value = await window.electronAPI.organization.listMine();
         if (!organizations.value.some((organization) => organization.orgId === selectedOrgId.value)) {
           selectedOrgId.value = organizations.value[0]?.orgId ?? '';
         }
-        await refreshSyncOverview();
+        const entries = await Promise.all(
+          organizations.value.map(async (organization) => {
+            try {
+              return [organization.orgId, await window.electronAPI.organization.getSyncOverview(organization.orgId)] as const;
+            } catch {
+              return [organization.orgId, null] as const;
+            }
+          })
+        );
+        overviews.value = Object.fromEntries(entries);
       } catch (error) {
-        message.value = `加载组织失败：${error}`;
-        ElMessage.error(message.value);
+        ElMessage.error(`加载组织失败：${error}`);
       } finally {
         loading.value = false;
       }
@@ -395,115 +428,180 @@ export default defineComponent({
           createForm.value.basePluginDomain = foundationPlugins.value[0]?.domain ?? '';
         }
       } catch (error) {
-        message.value = `加载插件目录失败：${error}`;
+        ElMessage.error(`加载插件目录失败：${error}`);
       }
+    };
+
+    const openDetail = (organization: OrganizationView) => {
+      selectedOrgId.value = organization.orgId;
+      drawerVisible.value = true;
+    };
+
+    const openOrgPlugin = (organization: OrganizationView) => {
+      if (!organization.basePluginDomain) {
+        return;
+      }
+      emit('open-plugin-tab', {
+        pluginDomain: organization.basePluginDomain,
+        pluginView: 'default',
+        title: `${organization.name} · 插件`,
+        icon: '基',
+        pluginContext: {
+          orgId: organization.orgId
+        }
+      });
+    };
+
+    const openCreateDialog = () => {
+      createDialogVisible.value = true;
     };
 
     const createOrganization = async () => {
       if (!createForm.value.name.trim()) {
-        message.value = '请输入组织名称';
-        ElMessage.warning(message.value);
+        ElMessage.warning('请输入组织名称');
         return;
       }
-
       if (!createForm.value.basePluginDomain) {
-        message.value = '请选择基础插件';
-        ElMessage.warning(message.value);
+        ElMessage.warning('请选择基础插件');
         return;
       }
 
       creating.value = true;
-      message.value = '';
       try {
         const created = await window.electronAPI.organization.create({
           name: createForm.value.name,
           description: createForm.value.description,
           basePluginDomain: createForm.value.basePluginDomain
         });
-        message.value = `组织已创建：${created.name}`;
-        ElMessage.success(message.value);
+        ElMessage.success(`组织已创建：${created.name}`);
         createForm.value = {
           name: '',
           description: '',
           basePluginDomain: createForm.value.basePluginDomain
         };
+        createDialogVisible.value = false;
         await refreshOrganizations();
         selectedOrgId.value = created.orgId;
+        drawerVisible.value = true;
       } catch (error) {
-        message.value = `创建组织失败：${error}`;
-        ElMessage.error(message.value);
+        ElMessage.error(`创建组织失败：${error}`);
       } finally {
         creating.value = false;
       }
     };
 
-    const addMember = async () => {
+    const openJoinDialog = () => {
+      joinCode.value = '';
+      joinDialogVisible.value = true;
+    };
+
+    const acceptInvite = async () => {
+      if (!joinCode.value.trim()) {
+        ElMessage.warning('请输入邀请码');
+        return;
+      }
+
+      joining.value = true;
+      try {
+        const joined = await window.electronAPI.organization.acceptInvite(joinCode.value.trim());
+        ElMessage.success(`已加入组织：${joined.orgName}`);
+        joinDialogVisible.value = false;
+        joinCode.value = '';
+        await refreshOrganizations();
+        selectedOrgId.value = joined.orgId;
+        drawerVisible.value = true;
+      } catch (error) {
+        ElMessage.error(`加入组织失败：${error}`);
+      } finally {
+        joining.value = false;
+      }
+    };
+
+    const openInviteDialog = () => {
+      inviteRootId.value = '';
+      invitePeerId.value = '';
+      inviteAddresses.value = '';
+      inviteResult.value = '';
+      inviteDialogVisible.value = true;
+    };
+
+    const resetInviteDialog = () => {
+      inviteRootId.value = '';
+      invitePeerId.value = '';
+      inviteAddresses.value = '';
+      inviteResult.value = '';
+    };
+
+    const addMemberAndInvite = async () => {
       if (!selectedOrganization.value) {
         return;
       }
-
-      const addresses = addMemberAddresses.value
-        .split(/\r?\n|,|;/)
-        .map((item) => item.trim())
-        .filter((item) => item.length > 0);
-
-      if (!addMemberRootId.value.trim()) {
-        message.value = '请输入成员 RootID';
-        ElMessage.warning(message.value);
+      if (!inviteRootId.value.trim()) {
+        ElMessage.warning('请输入成员 RootID');
         return;
       }
 
-      const nodeInfo = addMemberPeerId.value.trim() || addresses.length > 0
+      const addresses = inviteAddresses.value
+        .split(/\r?\n|,|;/)
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
+      const nodeInfo = invitePeerId.value.trim() || addresses.length > 0
         ? {
-            peerId: addMemberPeerId.value.trim() || undefined,
+            peerId: invitePeerId.value.trim() || undefined,
             addresses
           }
         : undefined;
 
-      busyAction.value = 'add';
-      message.value = '';
+      inviting.value = true;
       try {
-        const updated = await window.electronAPI.organization.addMember(selectedOrganization.value.orgId, {
-          rootId: addMemberRootId.value,
+        await window.electronAPI.organization.addMember(selectedOrganization.value.orgId, {
+          rootId: inviteRootId.value,
           nodeInfo
         });
-        message.value = '成员添加成功';
-        ElMessage.success(message.value);
-        addMemberRootId.value = '';
-        addMemberPeerId.value = '';
-        addMemberAddresses.value = '';
-        organizations.value = organizations.value.map((organization) =>
-          organization.orgId === updated.orgId ? updated : organization
-        );
-        await refreshSyncOverview();
+        const invite = await window.electronAPI.organization.createInvite(selectedOrganization.value.orgId);
+        inviteResult.value = invite.invite;
+        ElMessage.success('成员已预录入');
+        await refreshOrganizations();
       } catch (error) {
-        message.value = `添加成员失败：${error}`;
-        ElMessage.error(message.value);
+        ElMessage.error(`邀请成员失败：${error}`);
       } finally {
-        busyAction.value = '';
+        inviting.value = false;
       }
     };
 
-    const removeMember = async () => {
+    const copyInvite = async () => {
+      try {
+        await navigator.clipboard.writeText(inviteResult.value);
+        ElMessage.success('邀请码已复制');
+      } catch {
+        ElMessage.warning('复制失败，请手动选择文本复制');
+      }
+    };
+
+    const removeMember = async (member: OrganizationMember) => {
       if (!selectedOrganization.value) {
         return;
       }
 
-      busyAction.value = 'remove';
-      message.value = '';
       try {
-        const updated = await window.electronAPI.organization.removeMember(selectedOrganization.value.orgId, removeMemberRootId.value);
-        message.value = '成员已删除';
-        ElMessage.success(message.value);
-        removeMemberRootId.value = '';
-        organizations.value = organizations.value.map((organization) =>
-          organization.orgId === updated.orgId ? updated : organization
-        );
+        await ElMessageBox.confirm(`确认将成员「${member.rootId.slice(0, 12)}...」移出组织？`, '移除确认', {
+          type: 'warning',
+          confirmButtonText: '确认移除',
+          cancelButtonText: '取消'
+        });
+      } catch {
+        return;
+      }
+
+      removingRootId.value = member.rootId;
+      try {
+        await window.electronAPI.organization.removeMember(selectedOrganization.value.orgId, member.rootId);
+        ElMessage.success('成员已移除');
+        await refreshOrganizations();
       } catch (error) {
-        message.value = `删除成员失败：${error}`;
-        ElMessage.error(message.value);
+        ElMessage.error(`移除成员失败：${error}`);
       } finally {
-        busyAction.value = '';
+        removingRootId.value = '';
       }
     };
 
@@ -522,77 +620,21 @@ export default defineComponent({
         return;
       }
 
-      busyAction.value = 'delete';
-      message.value = '';
+      deleting.value = true;
       try {
         await window.electronAPI.organization.delete(selectedOrganization.value.orgId);
-        message.value = '组织已删除';
-        ElMessage.success(message.value);
+        ElMessage.success('组织已删除');
+        drawerVisible.value = false;
         await refreshOrganizations();
       } catch (error) {
-        message.value = `删除组织失败：${error}`;
-        ElMessage.error(message.value);
+        ElMessage.error(`删除组织失败：${error}`);
       } finally {
-        busyAction.value = '';
-      }
-    };
-
-    const createInvite = async () => {
-      if (!selectedOrganization.value) {
-        return;
-      }
-
-      busyAction.value = 'invite';
-      message.value = '';
-      try {
-        const result = await window.electronAPI.organization.createInvite(selectedOrganization.value.orgId);
-        generatedInvite.value = result.invite;
-        message.value = '邀请码已生成，请通过线下渠道发送给被邀请人';
-        ElMessage.success(message.value);
-      } catch (error) {
-        message.value = `生成邀请码失败：${error}`;
-        ElMessage.error(message.value);
-      } finally {
-        busyAction.value = '';
-      }
-    };
-
-    const copyInvite = async () => {
-      try {
-        await navigator.clipboard.writeText(generatedInvite.value);
-        ElMessage.success('邀请码已复制');
-      } catch {
-        ElMessage.warning('复制失败，请手动选择文本复制');
-      }
-    };
-
-    const acceptInvite = async () => {
-      if (!inviteCodeInput.value.trim()) {
-        message.value = '请输入邀请码';
-        ElMessage.warning(message.value);
-        return;
-      }
-
-      acceptingInvite.value = true;
-      message.value = '';
-      try {
-        const joined = await window.electronAPI.organization.acceptInvite(inviteCodeInput.value.trim());
-        message.value = `已加入组织：${joined.orgName}`;
-        ElMessage.success(message.value);
-        inviteCodeInput.value = '';
-        await refreshOrganizations();
-        selectedOrgId.value = joined.orgId;
-        await refreshSyncOverview();
-      } catch (error) {
-        message.value = `加入组织失败：${error}`;
-        ElMessage.error(message.value);
-      } finally {
-        acceptingInvite.value = false;
+        deleting.value = false;
       }
     };
 
     const memberSyncLabel = (rootId: string) => {
-      const item = syncOverview.value?.members.find((member) => member.rootId === rootId);
+      const item = currentOverview.value?.members.find((member) => member.rootId === rootId);
       if (!item) {
         return '-';
       }
@@ -616,38 +658,52 @@ export default defineComponent({
     };
 
     onMounted(() => {
+      void loadCurrentRootId();
       void loadPluginCatalog();
       void refreshOrganizations();
     });
 
     return {
       organizations,
+      overviews,
+      overviewOf,
       selectedOrgId,
       selectedOrganization,
+      currentOverview,
+      currentRootId,
       loading,
+      createDialogVisible,
+      joinDialogVisible,
+      inviteDialogVisible,
+      drawerVisible,
       creating,
-      busyAction,
-      message,
+      joining,
+      inviting,
+      deleting,
+      removingRootId,
       foundationPlugins,
       adminOrgCount,
-      addMemberRootId,
-      addMemberPeerId,
-      addMemberAddresses,
-      removeMemberRootId,
       createForm,
-      inviteCodeInput,
-      acceptingInvite,
-      generatedInvite,
-      syncOverview,
-      selectOrganization,
+      joinCode,
+      inviteRootId,
+      invitePeerId,
+      inviteAddresses,
+      inviteResult,
+      replicaLabel,
+      replicaTagType,
       refreshOrganizations,
+      openDetail,
+      openOrgPlugin,
+      openCreateDialog,
       createOrganization,
-      addMember,
+      openJoinDialog,
+      acceptInvite,
+      openInviteDialog,
+      resetInviteDialog,
+      addMemberAndInvite,
+      copyInvite,
       removeMember,
       deleteOrganization,
-      createInvite,
-      copyInvite,
-      acceptInvite,
       memberSyncLabel,
       formatDate
     };
@@ -663,8 +719,7 @@ export default defineComponent({
 }
 
 .hero-card,
-.panel-card,
-.inner-op-card {
+.panel-card {
   border-radius: 14px;
 }
 
@@ -672,6 +727,19 @@ export default defineComponent({
   display: flex;
   justify-content: space-between;
   gap: 16px;
+}
+
+.hero-side {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .eyebrow {
@@ -699,26 +767,16 @@ h4 {
   min-width: 260px;
 }
 
-.content-row {
-  margin-top: 0;
-}
-
 .hint {
-  margin-top: 10px;
+  margin: 4px 0 0;
   color: #64748b;
+  font-size: 13px;
 }
 
-.header-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-}
-
-.org-list {
+.org-grid {
   display: grid;
-  grid-template-columns: 1fr;
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
 }
 
 .org-item {
@@ -726,7 +784,7 @@ h4 {
   border: 1px solid var(--el-border-color);
 }
 
-.org-item.active {
+.org-item:hover {
   border-color: var(--el-color-primary);
 }
 
@@ -740,17 +798,55 @@ h4 {
 .org-desc {
   margin: 8px 0;
   color: #64748b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .org-meta {
   display: flex;
+  align-items: center;
   gap: 14px;
   color: #475569;
   font-size: 13px;
 }
 
-.detail-card {
-  margin-top: 16px;
+.org-item-actions {
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.org-plugin-domain {
+  color: #94a3b8;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.invite-advanced {
+  margin-bottom: 8px;
+}
+
+.invite-result {
+  margin-top: 12px;
+}
+
+.drawer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.drawer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 16px;
 }
 
 .replica-row {
@@ -765,21 +861,18 @@ h4 {
   font-size: 13px;
 }
 
-.invite-result {
-  margin-top: 12px;
-  display: grid;
-  gap: 8px;
-  justify-items: start;
-}
-
 .section-title {
   margin: 18px 0 12px;
 }
 
-.admin-actions {
+.drawer-actions {
   margin-top: 16px;
-  display: grid;
-  gap: 12px;
+  display: flex;
+  gap: 8px;
+}
+
+.drawer-alert {
+  margin-top: 16px;
 }
 
 @media (max-width: 900px) {
@@ -787,8 +880,16 @@ h4 {
     flex-direction: column;
   }
 
+  .hero-side {
+    align-items: stretch;
+  }
+
   .hero-stats {
     min-width: 100%;
+  }
+
+  .hero-actions {
+    justify-content: flex-end;
   }
 }
 </style>
