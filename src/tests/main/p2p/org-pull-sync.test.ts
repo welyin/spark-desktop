@@ -258,4 +258,45 @@ describe('OrgPullSyncService', () => {
     expect(syncStateCalls[0]?.orgId).toBe(orgId);
     expect(syncStateCalls[0]?.versions.summaryVersion).toBe(100);
   });
+
+  it('piggybacks nodeInfoClaim on the list request when extras provide one', async () => {
+    const db = new MemoryDb() as any;
+    const rootId = 'a'.repeat(64);
+
+    const service = new OrgPullSyncService({
+      db,
+      identityContext: { getCurrentRootId: async () => rootId },
+      runtimeImport: async () => ({}),
+      getNode: () => ({ peerId: { toString: () => 'QmSelf' } }),
+      connectPeer: async () => {}
+    });
+
+    const sentPayloads: any[] = [];
+    (service as any).requestDirect = async (_nodeInfo: any, request: any) => {
+      sentPayloads.push(request.payload);
+      return {
+        ok: true,
+        type: 'org-pull-list-response',
+        organizations: []
+      };
+    };
+
+    // 周期性重宣告场景：调用方每次拉取都捎带一份新鲜签名的 claim，
+    // 使对端能及时感知家用宽带公网 IPv4/IPv6 前缀变化
+    const claim = { type: 'spark-node-info-claim', signature: 'sig', marker: 'reannounce' };
+    await service.reconcileFromPeer(
+      { peerId: 'QmPeer', addresses: ['/ip4/127.0.0.1/tcp/15002/ws'] },
+      { nodeInfoClaim: claim }
+    );
+
+    expect(sentPayloads).toHaveLength(1);
+    expect(sentPayloads[0]?.nodeInfoClaim).toEqual(claim);
+    expect(sentPayloads[0]?.requesterRootId).toBe(rootId);
+    expect(sentPayloads[0]?.requesterPeerId).toBe('QmSelf');
+
+    // 未提供 claim 时 payload 不带该字段（undefined），保持原有报文形态
+    sentPayloads.length = 0;
+    await service.reconcileFromPeer({ peerId: 'QmPeer', addresses: ['/ip4/127.0.0.1/tcp/15002/ws'] });
+    expect(sentPayloads[0]?.nodeInfoClaim).toBeUndefined();
+  });
 });

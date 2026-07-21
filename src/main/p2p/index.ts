@@ -9,6 +9,8 @@ type P2PNodeRuntimeOptions = {
   appVersion?: string;
   onPeerVersionObserved?: (version: string, peerId: string) => Promise<void> | void;
   onNodeInfoClaim?: (claim: unknown, context: { remotePeerId?: string }) => Promise<void>;
+  getSelfNodeInfoClaim?: () => Promise<unknown | null>;
+  getRecoveryView?: () => Promise<Array<{ orgId: string; recoverySecret: string; memberNodeInfos: Array<{ peerId?: string; addresses: string[] }> }>>;
 };
 
 export type { LocalP2PNodeInfo, P2PIdentityContext, P2PMessageBody, PeerNodeInfo } from './types';

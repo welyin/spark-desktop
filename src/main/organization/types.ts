@@ -43,6 +43,13 @@ export type OrganizationRecord = {
 	createdAt: number;
 	createdBy: string;
 	updatedAt: number;
+	/**
+	 * 组织恢复盐（仅成员持有）：组织失联时用于生成恢复查询 token
+	 * （token = H(orgId + recoverySecret + timeBucket)），非成员即使看到
+	 * token 也难以枚举组织存在性。创建时生成；存量组织由管理员惰性补齐，
+	 * 经组织快照 gossip 扩散给其他成员。
+	 */
+	recoverySecret?: string;
 	members: OrganizationMember[];
 	sync?: OrganizationSyncState;
 };

@@ -1,10 +1,15 @@
 import crypto from 'crypto';
 import type { LevelDB } from '../db/base';
 import { getEvidenceHeadHash } from '../db/evidence';
-import { DIRECT_ORG_SHARE_PROTOCOL, DIRECT_VERSION_PROTOCOL, ORG_META_PREFIX, P2P_DEFAULT_LISTEN_WS_PORT, P2P_LISTEN_WS_PORT } from './constants';
+import { DIRECT_ORG_RECOVERY_PROTOCOL, DIRECT_ORG_SHARE_PROTOCOL, DIRECT_PEER_EXCHANGE_PROTOCOL, DIRECT_VERSION_PROTOCOL, NODE_ANNOUNCE_INTERVAL_MS, ORG_META_PREFIX, OVERLAY_DIAL_TARGET, OVERLAY_TICK_DIAL_BUDGET, OVERLAY_TOPIC, P2P_DEFAULT_LISTEN_WS_PORT, P2P_LISTEN_WS_PORT, RECOVERY_COOLDOWN_MS, RECOVERY_TRIGGER_CONSECUTIVE_TICKS } from './constants';
 import { getOrCreateLibp2pPrivateKey } from './identity-store';
-import { normalizePreferredPort, parseWsListenPort, pickListenPort } from './listen-port';
+import { buildWsListenAddrs, normalizePreferredPort, parseWsListenPort, pickListenPort, supportsIpv6 } from './listen-port';
+import { NodeAnnounceService } from './node-announce';
+import { activeRecoveryTokens, OrgRecoveryService } from './org-recovery';
+import type { RecoveryViewEntry } from './org-recovery';
+import { OverlayPeerStore } from './overlay-peer-store';
 import { PeerActivityStore } from './peer-activity-store';
+import { PeerExchangeService } from './peer-exchange';
 import { buildDialTargets, extractPeerId, normalizePeerIdList } from './peer-targets';
 import { OrgShareSyncService } from './org-share-sync';
 import { createPubsubMessageHandler } from './pubsub-message-handler';
@@ -17,6 +22,14 @@ type P2PRuntimeOptions = {
   onPeerVersionObserved?: (version: string, peerId: string) => Promise<void> | void;
   /** 成员节点地址声明处理（邀请码引导回填），由装配层注入 organization 服务 */
   onNodeInfoClaim?: (claim: unknown, context: { remotePeerId?: string }) => Promise<void>;
+  /**
+   * 构造本机签名节点地址声明（周期性重宣告）。
+   * 家用宽带公网 IPv4/IPv6 前缀都会变化：keepalive 反熵拉取时捎带新鲜 claim，
+   * 对端管理员落库后经组织快照 gossip 扩散，使成员地址记录跟随 IP 变化自动更新。
+   */
+  getSelfNodeInfoClaim?: () => Promise<unknown | null>;
+  /** 组织恢复视图（org-recovery 协议用）：当前身份所属组织的恢复盐与成员地址 */
+  getRecoveryView?: () => Promise<RecoveryViewEntry[]>;
 };
 
 /**
@@ -34,11 +47,23 @@ export class P2PNode {
   public publicKeyPem: string;
   public nodeId: string = 'local-node';
   private readonly peerActivity: PeerActivityStore;
+  private readonly overlayPeers: OverlayPeerStore;
+  private readonly peerExchange: PeerExchangeService;
+  private readonly nodeAnnounce: NodeAnnounceService;
+  private readonly orgRecovery: OrgRecoveryService;
+  private readonly getRecoveryView?: () => Promise<RecoveryViewEntry[]>;
   private readonly orgShare: OrgShareSyncService;
   private readonly appVersion: string;
   private readonly onPeerVersionObserved?: (version: string, peerId: string) => Promise<void> | void;
+  private readonly getSelfNodeInfoClaim?: () => Promise<unknown | null>;
   private readonly versionProbeInFlight = new Set<string>();
+  private overlayExchangeCursor = 0;
+  private lastAnnouncedAt = 0;
+  private orgDeadTickCount = 0;
+  private lastRecoveryQueryAt = 0;
   private listenPort: number | null = null;
+  /** 本机 libp2p 私钥（start 时从身份库加载）；libp2p v3 节点实例不再暴露它 */
+  private libp2pPrivateKey: any = null;
 
   constructor(
     private readonly db: LevelDB,
@@ -47,8 +72,25 @@ export class P2PNode {
   ) {
     this.appVersion = runtimeOptions?.appVersion ?? '0.0.0';
     this.onPeerVersionObserved = runtimeOptions?.onPeerVersionObserved;
+    this.getSelfNodeInfoClaim = runtimeOptions?.getSelfNodeInfoClaim;
 
     this.peerActivity = new PeerActivityStore(this.db, extractPeerId);
+    this.overlayPeers = new OverlayPeerStore(this.db);
+    this.peerExchange = new PeerExchangeService({
+      overlayPeers: this.overlayPeers,
+      getNode: () => this.node
+    });
+    this.nodeAnnounce = new NodeAnnounceService({
+      overlayPeers: this.overlayPeers,
+      getNode: () => this.node,
+      getPrivateKey: () => this.libp2pPrivateKey,
+      runtimeImport
+    });
+    this.getRecoveryView = runtimeOptions?.getRecoveryView;
+    this.orgRecovery = new OrgRecoveryService({
+      getRecoveryView: runtimeOptions?.getRecoveryView ?? (async () => []),
+      getNode: () => this.node
+    });
     this.orgShare = new OrgShareSyncService({
       db: this.db,
       identityContext: this.identityContext,
@@ -113,6 +155,31 @@ export class P2PNode {
       if (normalized === peerId) {
         return remotePeer;
       }
+    }
+
+    return null;
+  }
+
+  /** 取某个已连接 peer 的实际远端地址（multiaddr 字符串），用于覆盖网邻居池沉淀。 */
+  private getRemoteAddrString(peerId: string): string | null {
+    if (!this.node || typeof this.node.getConnections !== 'function') {
+      return null;
+    }
+
+    const connections = this.node.getConnections();
+    if (!Array.isArray(connections)) {
+      return null;
+    }
+
+    for (const connection of connections) {
+      const remotePeer = connection?.remotePeer;
+      const normalized = typeof remotePeer?.toString === 'function' ? remotePeer.toString() : String(remotePeer ?? '');
+      if (normalized !== peerId) {
+        continue;
+      }
+      const remoteAddr = connection?.remoteAddr;
+      const text = typeof remoteAddr?.toString === 'function' ? remoteAddr.toString() : String(remoteAddr ?? '');
+      return text.length > 0 ? text : null;
     }
 
     return null;
@@ -186,6 +253,9 @@ export class P2PNode {
     if (!this.node) {
       throw new Error('p2p node not started');
     }
+    // 先挂回组织无关的覆盖网：组织成员地址全部陈旧时，
+    // 覆盖网邻居是重回 Spark 网络的第一个抓手
+    await this.maintainOverlayNetwork();
     const currentRootId = await this.identityContext?.getCurrentRootId();
     if (!currentRootId) {
       return { attempted: 0, connected: 0 };
@@ -196,12 +266,15 @@ export class P2PNode {
     }
 
     const sorted = await this.peerActivity.sortCandidatesByPriority(candidates);
+    // 周期性重宣告自身 nodeInfoClaim：家用宽带公网 IPv4/IPv6 前缀会变化，
+    // 每次拉取捎带新鲜签名地址，让对端（管理员）落库后 gossip 扩散新地址
+    const nodeInfoClaim = (await this.getSelfNodeInfoClaim?.()) ?? undefined;
     let connected = 0;
     for (const candidate of sorted) {
       try {
         await this.connectPeer(candidate);
         await this.rememberPeerNodeInfo(candidate, 'success');
-        await this.orgShare.pullOrganizationsForCurrentRootFromPeer(candidate);
+        await this.orgShare.pullOrganizationsForCurrentRootFromPeer(candidate, { nodeInfoClaim });
         connected += 1;
       } catch (error) {
         await this.rememberPeerNodeInfo(candidate, 'failure', error);
@@ -220,24 +293,104 @@ export class P2PNode {
   }
 
   /**
+   * 覆盖网保活：
+   * 1) 活跃连接低于目标时，从组织无关的邻居池补充拨号（组织全灭时此步仍执行）；
+   * 2) 每 tick 与一个活跃邻居做 peer-exchange，让邻居来源沿覆盖网持续扩散；
+   * 3) 到周期后对外发布签名 node-announce，让最新地址沿覆盖网流动。
+   */
+  async maintainOverlayNetwork(): Promise<{ overlayDialed: number; exchanged: number; announced: boolean }> {
+    if (!this.node) {
+      return { overlayDialed: 0, exchanged: 0, announced: false };
+    }
+    const connectedPeers = new Set(this.getConnectedPeers());
+    const shortfall = OVERLAY_DIAL_TARGET - connectedPeers.size;
+
+    let overlayDialed = 0;
+    if (shortfall > 0) {
+      const budget = Math.min(OVERLAY_TICK_DIAL_BUDGET, shortfall);
+      const candidates = await this.overlayPeers.sampleDialCandidates(
+        new Set([...connectedPeers, this.nodeId]),
+        budget
+      );
+
+      for (const candidate of candidates) {
+        try {
+          await this.connectPeer({ peerId: candidate.peerId, addresses: candidate.addresses });
+          await this.overlayPeers.markDialResult(candidate.peerId, 'success');
+          overlayDialed += 1;
+        } catch (error) {
+          await this.overlayPeers.markDialResult(candidate.peerId, 'failure');
+          console.warn('[p2p][keepalive] overlay dial failed', {
+            peerId: candidate.peerId,
+            error: String(error)
+          });
+        }
+      }
+    }
+
+    const exchanged = await this.exchangePeersWithOneNeighbor();
+    const announced = await this.announceIfDue();
+
+    if (overlayDialed > 0 || exchanged > 0 || announced) {
+      console.log('[p2p][keepalive] overlay network maintained', { overlayDialed, exchanged, announced });
+    }
+    return { overlayDialed, exchanged, announced };
+  }
+
+  /** 周期性对外通告本机最新地址（间隔由 NODE_ANNOUNCE_INTERVAL_MS 控制）。 */
+  private async announceIfDue(): Promise<boolean> {
+    if (Date.now() - this.lastAnnouncedAt < NODE_ANNOUNCE_INTERVAL_MS) {
+      return false;
+    }
+    const published = await this.nodeAnnounce.publishOwnAnnounce().catch((error) => {
+      console.warn('[p2p][overlay] periodic announce failed', { error: String(error) });
+      return false;
+    });
+    if (published) {
+      this.lastAnnouncedAt = Date.now();
+    }
+    return published;
+  }
+
+  /** 每 tick 轮选一个活跃邻居发起 peer-exchange（游标轮转，避免总是打同一个）。 */
+  private async exchangePeersWithOneNeighbor(): Promise<number> {
+    const neighbors = this.getConnectedPeers()
+      .filter((peerId) => peerId !== this.nodeId)
+      .sort();
+    if (neighbors.length === 0) {
+      return 0;
+    }
+
+    const target = neighbors[this.overlayExchangeCursor % neighbors.length];
+    this.overlayExchangeCursor += 1;
+    if (!target) {
+      return 0;
+    }
+    return await this.peerExchange.exchangeWithPeer(target);
+  }
+
+  /**
    * 保活 tick（由 KeepaliveScheduler 周期调用）：
+   * 0) 覆盖网维护：活跃连接不足时从组织无关邻居池补拨（组织全灭时此步仍执行）；
    * 1) 候选拨号：向最多 3 个未连接的组织成员节点发起连接；
    * 2) 反熵拉取：从最多 2 个已连接候选拉取组织数据；
    * 3) 管理员补副本：副本数不足 K 时向未同步成员推送快照（每组织最多 2 个）。
    */
-  async maintainOrganizationNetwork(): Promise<{ dialed: number; pulled: number; replicaPushed: number }> {
+  async maintainOrganizationNetwork(): Promise<{ dialed: number; pulled: number; replicaPushed: number; overlayDialed: number; recoveryDialed: number }> {
     if (!this.node) {
-      return { dialed: 0, pulled: 0, replicaPushed: 0 };
+      return { dialed: 0, pulled: 0, replicaPushed: 0, overlayDialed: 0, recoveryDialed: 0 };
     }
+    const { overlayDialed } = await this.maintainOverlayNetwork();
     const currentRootId = await this.identityContext?.getCurrentRootId();
     if (!currentRootId) {
-      return { dialed: 0, pulled: 0, replicaPushed: 0 };
+      return { dialed: 0, pulled: 0, replicaPushed: 0, overlayDialed, recoveryDialed: 0 };
     }
 
     const candidates = await this.peerActivity.collectOrganizationPeerCandidates(currentRootId);
     if (candidates.length === 0) {
-      // 无任何可连接成员（都未回填地址）时，补副本也无的放矢，直接结束
-      return { dialed: 0, pulled: 0, replicaPushed: 0 };
+      // 无任何已知成员地址 = 组织失联的更重形态：除了维持覆盖网，仍尝试定向恢复
+      const recoveryDialed = await this.maybeRunOrgRecovery(true);
+      return { dialed: 0, pulled: 0, replicaPushed: 0, overlayDialed, recoveryDialed };
     }
 
     const connectedPeers = new Set(this.getConnectedPeers());
@@ -265,12 +418,13 @@ export class P2PNode {
     }
 
     let pulled = 0;
+    const nodeInfoClaim = (await this.getSelfNodeInfoClaim?.()) ?? undefined;
     for (const candidate of connectedCandidates) {
       if (pulled >= 2) {
         break;
       }
       try {
-        await this.orgShare.pullOrganizationsForCurrentRootFromPeer(candidate);
+        await this.orgShare.pullOrganizationsForCurrentRootFromPeer(candidate, { nodeInfoClaim });
         pulled += 1;
       } catch (error) {
         console.warn('[p2p][keepalive] pull from candidate failed', {
@@ -281,12 +435,72 @@ export class P2PNode {
     }
 
     const replicaPushed = await this.replenishOrganizationReplicas(currentRootId);
+    const recoveryDialed = await this.maybeRunOrgRecovery(connectedCandidates.length === 0);
 
     if (dialed > 0 || pulled > 0 || replicaPushed > 0) {
-      console.log('[p2p][keepalive] maintain organization network', { dialed, pulled, replicaPushed });
+      console.log('[p2p][keepalive] maintain organization network', { dialed, pulled, replicaPushed, overlayDialed, recoveryDialed });
     }
 
-    return { dialed, pulled, replicaPushed };
+    return { dialed, pulled, replicaPushed, overlayDialed, recoveryDialed };
+  }
+
+  /**
+   * 组织失联时的覆盖网定向恢复：
+   * 组织侧"全员不可达"连续 RECOVERY_TRIGGER_CONSECUTIVE_TICKS 个 tick 后，
+   * 以恢复盐生成 token 向活跃覆盖网邻居查询（每 10 分钟最多一轮），
+   * 命中候选只拨号、不写组织成员表——组织校验仍走既有 pull/claim 链路。
+   */
+  private async maybeRunOrgRecovery(orgUnreachable: boolean): Promise<number> {
+    if (!orgUnreachable) {
+      this.orgDeadTickCount = 0;
+      return 0;
+    }
+
+    this.orgDeadTickCount += 1;
+    if (this.orgDeadTickCount < RECOVERY_TRIGGER_CONSECUTIVE_TICKS) {
+      return 0;
+    }
+    if (Date.now() - this.lastRecoveryQueryAt < RECOVERY_COOLDOWN_MS) {
+      return 0;
+    }
+
+    const view = this.getRecoveryView ? await this.getRecoveryView() : [];
+    if (view.length === 0) {
+      return 0;
+    }
+    const neighbors = this.getConnectedPeers().filter((peerId) => peerId !== this.nodeId);
+    if (neighbors.length === 0) {
+      return 0;
+    }
+
+    this.lastRecoveryQueryAt = Date.now();
+    let dialedCount = 0;
+    const attempted = new Set<string>();
+    for (const entry of view.slice(0, 3)) {
+      const token = activeRecoveryTokens(entry.orgId, entry.recoverySecret)[0];
+      if (!token) {
+        continue;
+      }
+      const found = await this.orgRecovery.queryRecovery(token, neighbors.slice(0, 3));
+      for (const candidate of found) {
+        const key = candidate.peerId ?? candidate.addresses.join('|');
+        if (!key || attempted.has(key) || dialedCount >= 4) {
+          continue;
+        }
+        attempted.add(key);
+        try {
+          await this.connectPeer(candidate);
+          dialedCount += 1;
+        } catch {
+          // 提示类候选，拨不通静默跳过
+        }
+      }
+    }
+
+    if (dialedCount > 0) {
+      console.log('[p2p][keepalive] org recovery query dialed candidates', { dialedCount, queriedOrgs: Math.min(view.length, 3) });
+    }
+    return dialedCount;
   }
 
   /** 管理员补副本：对副本不足的组织，向从未同步成功的成员推送快照（每组织最多 2 个）。 */
@@ -408,24 +622,50 @@ export class P2PNode {
       const { mplex } = await runtimeImport('@libp2p/mplex');
       const { noise } = await runtimeImport('@chainsafe/libp2p-noise');
       const { mdns } = await runtimeImport('@libp2p/mdns');
-      const { gossipsub } = await runtimeImport('@chainsafe/libp2p-gossipsub');
+      const { gossipsub } = await runtimeImport('@libp2p/gossipsub');
       const { identify } = await runtimeImport('@libp2p/identify');
+      const { circuitRelayTransport, circuitRelayServer } = await runtimeImport('@libp2p/circuit-relay-v2');
+      const { autoNAT } = await runtimeImport('@libp2p/autonat');
+      const { uPnPNAT } = await runtimeImport('@libp2p/upnp-nat');
+      const { dcutr } = await runtimeImport('@libp2p/dcutr');
       const libp2pPrivateKey = await this.getOrCreateLibp2pPrivateKey();
+      this.libp2pPrivateKey = libp2pPrivateKey;
       const preferredPort = await this.getPersistedListenPort();
-      const selectedPort = await pickListenPort(preferredPort);
-      const listenAddress = selectedPort > 0
-        ? `/ip4/0.0.0.0/tcp/${selectedPort}/ws`
-        : '/ip4/0.0.0.0/tcp/0/ws';
+      // 双栈监听：IPv6 全球单播可达天然免穿透；OS 禁用 IPv6 时回退 IPv4 单栈。
+      // 选端口时按将要实际绑定的栈探测，避免"IPv4 空闲但 IPv6 被占"误判可用
+      const ipv6Enabled = await supportsIpv6();
+      const selectedPort = await pickListenPort(preferredPort, undefined, ipv6Enabled);
+      const listenAddresses = buildWsListenAddrs(selectedPort, ipv6Enabled);
 
-      this.node = await createLibp2p({
+      const createNode = async (addrs: string[]) => createLibp2p({
         privateKey: libp2pPrivateKey,
-        addresses: { listen: [listenAddress] },
-        transports: [webSockets()],
+        addresses: { listen: addrs },
+        transports: [
+          webSockets(),
+          // 中继传输：直连不可达时经组织内节点中转（noise 端到端加密，中继只见密文）；
+          // 内置 RelayDiscovery 借 identify 自动发现成员中继并预约，
+          // 预约所得 /p2p-circuit 地址自动进入 getMultiaddrs() 随邀请码/声明传播
+          circuitRelayTransport()
+        ],
         streamMuxers: [mplex()],
         connectionEncrypters: [noise()],
         peerDiscovery: [mdns()],
         services: {
           identify: identify(),
+          // 可达性探测（UPnP 映射地址需经它确认后才对外公布）
+          autonat: autoNAT(),
+          // 家用路由器端口映射，失败静默不影响其余链路
+          upnp: uPnPNAT(),
+          // 打洞：中继连接建立后尝试升级为直连
+          dcutr: dcutr(),
+          // 每个节点都是潜在中继（不可信、可替换），流量受上限约束
+          relay: circuitRelayServer({
+            reservations: {
+              maxReservations: 15,
+              defaultDurationLimit: 2 * 60 * 60 * 1000,
+              defaultDataLimit: BigInt(256 * 1024 * 1024)
+            }
+          }),
           pubsub: gossipsub({
             emitSelf: false,
             allowPublishToZeroTopicPeers: true,
@@ -434,7 +674,20 @@ export class P2PNode {
         }
       });
 
-      await this.node.start();
+      try {
+        this.node = await createNode(listenAddresses);
+        await this.node.start();
+      } catch (error) {
+        // 探测与绑定之间存在竞态（或栈语义差异）：双栈失败时回退 IPv4 单栈，
+        // 不能让整个 P2P 节点启动失败
+        if (!ipv6Enabled) {
+          throw error;
+        }
+        console.warn('[p2p] dual-stack listen failed, retrying with IPv4 only', { error: String(error) });
+        await this.node?.stop().catch(() => {});
+        this.node = await createNode(buildWsListenAddrs(selectedPort, false));
+        await this.node.start();
+      }
       this.nodeId = typeof this.node.peerId?.toString === 'function' ? this.node.peerId.toString() : String(this.node.peerId);
       const startedAddresses = typeof this.node.getMultiaddrs === 'function'
         ? (this.node.getMultiaddrs() as any[])
@@ -452,6 +705,10 @@ export class P2PNode {
           console.log('[p2p] peer connected', peerId);
           if (peerId !== 'unknown') {
             await this.markPeerConnected(peerId);
+            // 任何成功连接都沉淀进覆盖网邻居池（组织无关），
+            // 使"曾经连通过"本身成为覆盖网的地基
+            const remoteAddr = this.getRemoteAddrString(peerId);
+            await this.overlayPeers.remember(peerId, remoteAddr ? [remoteAddr] : [], 'connect');
             void this.observePeerVersionByDirectProtocol(peerId);
           }
         });
@@ -481,11 +738,34 @@ export class P2PNode {
           await writeStringToStream(incoming, response);
         });
         console.log('[p2p] direct version protocol registered', DIRECT_VERSION_PROTOCOL);
+
+        this.node.handle(DIRECT_PEER_EXCHANGE_PROTOCOL, async (incoming: any) => {
+          await this.peerExchange.handleDirectIncoming(incoming);
+        });
+        console.log('[p2p] direct peer-exchange protocol registered', DIRECT_PEER_EXCHANGE_PROTOCOL);
+
+        this.node.handle(DIRECT_ORG_RECOVERY_PROTOCOL, async (incoming: any) => {
+          await this.orgRecovery.handleDirectIncoming(incoming);
+        });
+        console.log('[p2p] direct org-recovery protocol registered', DIRECT_ORG_RECOVERY_PROTOCOL);
       }
 
       const syncTopic = 'spark-sync';
       await this.node.services.pubsub.subscribe(syncTopic);
       console.log('[p2p] subscribed topic', syncTopic);
+
+      // 覆盖网控制面主题：node-announce 等网络层消息与业务数据分离传播
+      await this.node.services.pubsub.subscribe(OVERLAY_TOPIC);
+      console.log('[p2p] subscribed topic', OVERLAY_TOPIC);
+
+      // 地址变化（UPnP 映射、relay 预约、IPv6 前缀轮换等）时立即补发一次通告
+      if (typeof this.node.addEventListener === 'function') {
+        this.node.addEventListener('self:peer:update', () => {
+          void this.nodeAnnounce.publishOwnAnnounce().catch((error) => {
+            console.warn('[p2p][overlay] announce on self:peer:update failed', { error: String(error) });
+          });
+        });
+      }
 
       const handleMessage = createPubsubMessageHandler({
         db: this.db,
@@ -494,11 +774,21 @@ export class P2PNode {
         broadcast: async (topic, body) => this.broadcast(topic, body)
       });
 
+      // 按主题分流：overlay 主题走网络层通告处理，其余走既有业务处理器
+      const handleAnyMessage = async (raw: any) => {
+        const topic = raw?.detail?.topic ?? raw?.topic;
+        if (topic === OVERLAY_TOPIC) {
+          await this.nodeAnnounce.handlePubsubMessage(raw);
+          return;
+        }
+        await handleMessage(raw);
+      };
+
       if (typeof this.node.services.pubsub.on === 'function') {
-        this.node.services.pubsub.on('message', handleMessage);
+        this.node.services.pubsub.on('message', handleAnyMessage);
         console.log('[p2p] pubsub message handler bound via on(message)');
       } else if (typeof this.node.services.pubsub.addEventListener === 'function') {
-        this.node.services.pubsub.addEventListener('message', handleMessage);
+        this.node.services.pubsub.addEventListener('message', handleAnyMessage);
         console.log('[p2p] pubsub message handler bound via addEventListener(message)');
       } else {
         console.warn('[p2p] pubsub message handler binding failed: no supported API');

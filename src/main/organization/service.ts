@@ -121,6 +121,7 @@ export class OrganizationService {
 			createdAt: now,
 			createdBy: currentRootId,
 			updatedAt: now,
+			recoverySecret: randomBytes(32).toString('hex'),
 			members: [
 				{
 					rootId: currentRootId,
@@ -146,6 +147,53 @@ export class OrganizationService {
 		await this.db.open();
 		await this.db.put(organizationKey(record.orgId), JSON.stringify(record));
 		return this.toView(record, currentRootId);
+	}
+
+	/**
+	 * 组织恢复视图：返回当前用户为成员的组织的恢复参数（orgId + 恢复盐 + 成员地址）。
+	 * 供覆盖网 org-recovery 协议计算查询 token 与应答命中查询。
+	 * 存量组织缺 recoverySecret 时由管理员惰性补齐：bump updatedAt 后落库，
+	 * 经既有反熵拉取扩散给其他成员（恢复盐不在保留字段中，随 summary.metadata 流动）。
+	 */
+	async getRecoveryView(): Promise<Array<{ orgId: string; recoverySecret: string; memberNodeInfos: OrganizationNodeInfo[] }>> {
+		const currentRootId = await this.rootIdentity.getCurrentRootId();
+		if (!currentRootId) {
+			return [];
+		}
+
+		await this.db.open();
+		const records = await this.readAllOrganizations();
+		const view: Array<{ orgId: string; recoverySecret: string; memberNodeInfos: OrganizationNodeInfo[] }> = [];
+		for (const record of records) {
+			const self = record.members.find((member) => member.rootId === currentRootId);
+			if (!self) {
+				continue;
+			}
+
+			if (!record.recoverySecret) {
+				// 非管理员等管理员补齐后经 gossip 获得；本轮先跳过
+				if (self.role !== 'admin') {
+					continue;
+				}
+				record.recoverySecret = randomBytes(32).toString('hex');
+				record.updatedAt = Date.now();
+				record.sync = {
+					versions: buildOrganizationSyncVersions(record, record.sync?.versions?.transactionsVersion ?? record.updatedAt),
+					sections: pickSyncSectionsByPriority(record),
+					lastSyncedAt: record.sync?.lastSyncedAt ?? 0
+				};
+				await this.db.put(organizationKey(record.orgId), JSON.stringify(record));
+			}
+
+			view.push({
+				orgId: record.orgId,
+				recoverySecret: record.recoverySecret,
+				memberNodeInfos: record.members
+					.filter((member) => (member.nodeInfo?.addresses?.length ?? 0) > 0)
+					.map((member) => member.nodeInfo as OrganizationNodeInfo)
+			});
+		}
+		return view;
 	}
 
 	async deleteOrganization(orgId: string): Promise<{ success: boolean }> {

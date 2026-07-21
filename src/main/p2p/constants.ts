@@ -30,6 +30,102 @@ export const P2P_DEFAULT_LISTEN_WS_PORT = 15002;
 export const P2P_PEER_RECORD_PREFIX = 'p2p:peer:record:';
 
 /**
+ * 覆盖网邻居池记录前缀：组织无关的 peer 地址簿（p2p:overlay:peer:<peerId>）。
+ */
+export const P2P_OVERLAY_PEER_PREFIX = 'p2p:overlay:peer:';
+
+/**
+ * 覆盖网邻居池容量上限：超出时淘汰最久未见的未验证条目。
+ */
+export const OVERLAY_POOL_MAX = 200;
+
+/**
+ * 活跃覆盖网连接目标数：低于该值时 keepalive 从邻居池补充拨号。
+ */
+export const OVERLAY_DIAL_TARGET = 4;
+
+/**
+ * 每个 keepalive tick 允许的最大覆盖网拨号次数。
+ */
+export const OVERLAY_TICK_DIAL_BUDGET = 2;
+
+/**
+ * peer-exchange 直连协议名：覆盖网邻居样本交换通道。
+ */
+export const DIRECT_PEER_EXCHANGE_PROTOCOL = '/spark/peer-exchange/1.0.0';
+
+/**
+ * 单次 peer-exchange 请求/响应的最大条目数。
+ */
+export const PEER_EXCHANGE_MAX = 16;
+
+/**
+ * 响应侧只分享该时间窗内见过的邻居（14 天），更旧的条目不再外发。
+ */
+export const PEER_EXCHANGE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * 响应侧限流：同一请求方两次服务的最小间隔。
+ */
+export const PEER_EXCHANGE_MIN_INTERVAL_MS = 60_000;
+
+/**
+ * 覆盖网控制面主题：node-announce 等网络层消息在这里传播，
+ * 与承载业务数据的 spark-sync 主题分离（频率/限流/缓存可独立调）。
+ */
+export const OVERLAY_TOPIC = 'spark-overlay';
+
+/**
+ * node-announce 周期发送间隔（5 分钟）；地址变化时会立即补发一次。
+ */
+export const NODE_ANNOUNCE_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * 接收侧限流：同一 peerId 的 announce 两次接受的最小间隔。
+ */
+export const NODE_ANNOUNCE_ACCEPT_MIN_INTERVAL_MS = 60_000;
+
+/**
+ * announce 时间戳新鲜度窗口（与 nodeInfoClaim 口径一致）。
+ */
+export const NODE_ANNOUNCE_MAX_AGE_MS = 10 * 60_000;
+
+/**
+ * org-recovery 直连协议名：组织失联时沿覆盖网定向寻找"知道路的人"。
+ */
+export const DIRECT_ORG_RECOVERY_PROTOCOL = '/spark/org-recovery/1.0.0';
+
+/**
+ * 恢复查询 token 时间桶（10 分钟）：查询与应答都计算当前+上一两个桶，消除桶边界漏配。
+ */
+export const RECOVERY_TIME_BUCKET_MS = 10 * 60_000;
+
+/**
+ * 恢复查询最大转发跳数（节制扩散，不做全网洪泛）。
+ */
+export const RECOVERY_TTL = 2;
+
+/**
+ * 单个组织两次恢复查询的最小间隔（冷却）。
+ */
+export const RECOVERY_COOLDOWN_MS = 10 * 60_000;
+
+/**
+ * 触发恢复查询前，组织侧"全员失联"需持续的 tick 数。
+ */
+export const RECOVERY_TRIGGER_CONSECUTIVE_TICKS = 3;
+
+/**
+ * 单次恢复查询请求的成员条目上限。
+ */
+export const RECOVERY_QUERY_WANT = 8;
+
+/**
+ * 应答侧限流：同一请求方两次恢复查询服务的最小间隔。
+ */
+export const RECOVERY_QUERY_MIN_INTERVAL_MS = 30_000;
+
+/**
  * 组织元数据前缀：组织信息按 org:meta:<orgId> 存储。
  */
 export const ORG_META_PREFIX = 'org:meta:';

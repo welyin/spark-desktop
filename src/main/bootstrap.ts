@@ -17,6 +17,33 @@ import { getUpdaterService } from './updater';
 /** 组织网络保活周期（60s）：候选拨号 + 反熵拉取 + 管理员补副本 */
 const ORG_KEEPALIVE_INTERVAL_MS = 60_000;
 
+/**
+ * 构建当前身份的签名 nodeInfoClaim（邀请加入与周期性重宣告共用）。
+ * 家用宽带公网 IPv4 会变化、IPv6 前缀也会重新分配，claim 需随每次拉取
+ * 重新签名捎带，让对端落库并 gossip 扩散最新地址。
+ */
+async function buildSelfNodeInfoClaim(): Promise<NodeInfoClaim | null> {
+  if (!isP2PInitialized() || !getP2PNode().isStarted()) {
+    return null;
+  }
+  const status = await rootIdentityManager.getStatus();
+  const publicKey = rootIdentityManager.getUnlockedPublicKeyBase64();
+  if (!status.unlocked || !status.rootId || !publicKey) {
+    return null;
+  }
+  const local = getP2PNode().getLocalNodeInfo();
+  const unsigned = {
+    type: 'spark-node-info-claim' as const,
+    version: 1 as const,
+    rootId: status.rootId,
+    publicKey,
+    nodeInfo: { peerId: local.peerId ?? undefined, addresses: local.addresses },
+    timestamp: Date.now()
+  };
+  const signed = rootIdentityManager.signWithRootIdentity(buildNodeInfoClaimPayload(unsigned));
+  return { ...unsigned, signature: signed.signature };
+}
+
 export const organizationService = new OrganizationService(levelDB, {
   getCurrentRootId: async () => {
     const status = await rootIdentityManager.getStatus();
@@ -55,27 +82,7 @@ export const organizationService = new OrganizationService(levelDB, {
     const result = await getP2PNode().pullOrganizationsFromPeer(nodeInfo, extras);
     return { pulled: result.pulled };
   },
-  buildSelfNodeInfoClaim: async (): Promise<NodeInfoClaim | null> => {
-    if (!isP2PInitialized() || !getP2PNode().isStarted()) {
-      return null;
-    }
-    const status = await rootIdentityManager.getStatus();
-    const publicKey = rootIdentityManager.getUnlockedPublicKeyBase64();
-    if (!status.unlocked || !status.rootId || !publicKey) {
-      return null;
-    }
-    const local = getP2PNode().getLocalNodeInfo();
-    const unsigned = {
-      type: 'spark-node-info-claim' as const,
-      version: 1 as const,
-      rootId: status.rootId,
-      publicKey,
-      nodeInfo: { peerId: local.peerId ?? undefined, addresses: local.addresses },
-      timestamp: Date.now()
-    };
-    const signed = rootIdentityManager.signWithRootIdentity(buildNodeInfoClaimPayload(unsigned));
-    return { ...unsigned, signature: signed.signature };
-  }
+  buildSelfNodeInfoClaim
 });
 
 let coreServicesLastError: string | null = null;
@@ -137,7 +144,9 @@ export async function ensureCoreServicesStarted(): Promise<void> {
         },
         onNodeInfoClaim: async (claim, context) => {
           await organizationService.applyNodeInfoClaim(claim as NodeInfoClaim, context);
-        }
+        },
+        getSelfNodeInfoClaim: buildSelfNodeInfoClaim,
+        getRecoveryView: async () => organizationService.getRecoveryView()
       });
       console.log('[main] p2p node initialized with db');
     }
