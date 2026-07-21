@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import type { LevelDB } from '../db/base';
-import { DIRECT_ORG_SHARE_PROTOCOL, ORG_META_PREFIX, ORG_REPLICA_FRESH_WINDOW_MS, ORG_REPLICA_TARGET } from './constants';
+import { DIRECT_ORG_SHARE_PROTOCOL, ORG_META_PREFIX, ORG_REPLICA_FRESH_WINDOW_MS, ORG_REPLICA_TARGET, ORG_SYNC_STATE_PREFIX } from './constants';
 import { buildDialTargets, extractPeerId } from './peer-targets';
 import { buildOrganizationSyncSnapshot, buildOrganizationSyncVersions, isOrganizationSyncStale, mergeOrganizationSyncSnapshot, type OrganizationSyncSnapshot, type OrganizationSyncVersions } from '../organization/sync';
 import { OrgShareSessionState } from './org-share-session';
@@ -61,7 +61,7 @@ export class OrgShareSyncService {
   }
 
   private orgSyncStateKey(peerId: string, orgId: string): string {
-    return `p2p:org-sync-state:${peerId}:${orgId}`;
+    return `${ORG_SYNC_STATE_PREFIX}${peerId}:${orgId}`;
   }
 
   private async getOrgSyncState(peerId: string, orgId: string): Promise<OrgSyncState | null> {

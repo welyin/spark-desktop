@@ -140,6 +140,12 @@ export const RECOVERY_QUERY_MIN_INTERVAL_MS = 30_000;
 export const ORG_META_PREFIX = 'org:meta:';
 
 /**
+ * 组织同步记账前缀：按 p2p:org-sync-state:<peerId>:<orgId> 记录成员副本状态。
+ * data-management 的过期清理按此前缀扫描。
+ */
+export const ORG_SYNC_STATE_PREFIX = 'p2p:org-sync-state:';
+
+/**
  * 组织副本目标数（K）：副本可见与保活补副本共用的目标值。
  * 达到 K 个已同步节点（含本机）即视为副本充足。
  */

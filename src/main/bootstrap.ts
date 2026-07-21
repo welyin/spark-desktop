@@ -4,6 +4,7 @@ import { initP2PNode, getP2PNode, isP2PInitialized } from './p2p/index';
 import { KeepaliveScheduler } from './p2p/keepalive';
 import { buildNodeInfoClaimPayload, OrganizationService } from './organization/index';
 import type { NodeInfoClaim } from './organization/index';
+import { DataManagementService } from './data-management';
 import { rootIdentityManager } from './identity';
 import { getUpdaterService } from './updater';
 
@@ -118,6 +119,13 @@ export function stopOrganizationKeepalive(): void {
   orgKeepaliveScheduler?.stop();
 }
 
+/** 数据自动管理服务（随核心服务启动，db-close 时停止） */
+export const dataManagementService = new DataManagementService(levelDB);
+
+export function stopDataMaintenance(): void {
+  dataManagementService.stop();
+}
+
 export async function ensureCoreServicesStarted(): Promise<void> {
   try {
     await levelDB.open();
@@ -157,6 +165,7 @@ export async function ensureCoreServicesStarted(): Promise<void> {
     }
 
     ensureOrganizationKeepaliveStarted();
+    dataManagementService.start();
 
     coreServicesLastError = null;
   } catch (error) {

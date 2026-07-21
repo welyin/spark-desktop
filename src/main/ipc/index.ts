@@ -5,6 +5,7 @@ import { registerPluginMarketHandlers } from './plugin-market';
 import { registerDbHandlers } from './db';
 import { registerP2PHandlers } from './p2p';
 import { registerUpdaterHandlers } from './updater';
+import { registerDataHandlers } from './data';
 
 /**
  * 注册全部 IPC handler
@@ -18,4 +19,5 @@ export function registerAllIpcHandlers(): void {
   registerDbHandlers();
   registerP2PHandlers();
   registerUpdaterHandlers();
+  registerDataHandlers();
 }

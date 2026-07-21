@@ -8,6 +8,19 @@ export type DBStatus = {
   open: boolean;
 };
 
+/** data-usage 返回的分类用量报告（与 main/data-management/usage.ts 对齐） */
+export type DataUsageReportDto = {
+  scannedAt: number;
+  classes: Record<
+    'documents' | 'indexes' | 'syncMeta' | 'evidence' | 'organization' | 'p2p' | 'system' | 'other',
+    { keys: number; bytes: number }
+  >;
+  totalKeys: number;
+  totalBytes: number;
+  disk: { path: string; freeBytes: number; totalBytes: number; freeRatio: number } | null;
+  warnings: { usageExceeded: boolean; diskLow: boolean };
+};
+
 export type LevelDBOperation = {
   type: 'put' | 'del';
   key: string;
@@ -357,6 +370,39 @@ export type ElectronAPI = {
     applyRestart: () => Promise<{ success: boolean }>;
     observePeerVersion: (version: string) => Promise<{ success: boolean }>;
   };
+  dataManagement: {
+    usage: () => Promise<DataUsageReportDto>;
+    cleanupNow: () => Promise<{ ranAt: number; tombstones: number; peerRecords: number; orgSyncStates: number }>;
+    exportData: () => Promise<{ cancelled: true } | { cancelled: false; path: string; entries: number; bytes: number }>;
+    purgePreview: (orgId: string, beforeTs: number) => Promise<{
+      orgId: string;
+      domain: string;
+      beforeTs: number;
+      preview: { collections: string[]; affectedDocs: number; affectedBytes: number };
+      replica: {
+        orgId: string;
+        replicaTarget: number;
+        syncedPeers: number;
+        totalMembers: number;
+        members: Array<{
+          rootId: string;
+          peerId?: string;
+          isSelf: boolean;
+          everSynced: boolean;
+          lastSyncedAt: number | null;
+        }>;
+      } | null;
+      isCurrentUserAdmin: boolean;
+    }>;
+    purgeExecute: (orgId: string, beforeTs: number, confirmExported: boolean) => Promise<{
+      domain: string;
+      beforeTs: number;
+      collections: string[];
+      removedDocs: number;
+      freedBytes: number;
+      purgedAt: number;
+    }>;
+  };
   /**
    * 查询当前窗口的可信域身份（只读）
    * 域身份由主进程在创建窗口时绑定，渲染进程无法修改
@@ -451,6 +497,14 @@ const api = {
     stageLatest: () => ipcRenderer.invoke('update-stage-latest'),
     applyRestart: () => ipcRenderer.invoke('update-apply-restart'),
     observePeerVersion: (version: string) => ipcRenderer.invoke('update-observe-peer-version', version)
+  },
+  dataManagement: {
+    usage: () => ipcRenderer.invoke('data-usage'),
+    cleanupNow: () => ipcRenderer.invoke('data-cleanup-now'),
+    exportData: () => ipcRenderer.invoke('data-export'),
+    purgePreview: (orgId: string, beforeTs: number) => ipcRenderer.invoke('data-purge-preview', orgId, beforeTs),
+    purgeExecute: (orgId: string, beforeTs: number, confirmExported: boolean) =>
+      ipcRenderer.invoke('data-purge-execute', orgId, beforeTs, confirmExported)
   },
   getDomain: () => ipcRenderer.invoke('get-current-domain')
 };

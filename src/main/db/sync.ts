@@ -1,5 +1,6 @@
 import { LevelDBOperation, LevelDB } from './base';
 import { CollectionSchemaDeclaration, ResolvedCollectionPolicy, isSyncStrategy, resolveCollectionPolicy } from './schema';
+import { isPurgedByWatermark } from '../data-management/watermark';
 import {
   buildEvidenceDataHash,
   buildEvidenceMetaHash,
@@ -188,6 +189,14 @@ export async function applyRemoteUpdate<T = any>(
   remoteMeta: { vv: Record<string, number>; ts: number; nodeId?: string },
   options: { schema?: CollectionSchemaDeclaration } = {}
 ) {
+  // purge 水位线拦截：本地手动清理过的时代（remoteMeta.ts 早于水位线）拒绝落地，
+  // 防止已清理数据经推送/反熵拉取回灌。被清理文档重推时 meta 携带原始写入
+  // 时间戳（必然早于水位线）；新写入的 ts 为写时时间，不会误伤。
+  if (await isPurgedByWatermark(db, domain, collection, remoteMeta?.ts)) {
+    console.log('[sync] skip remote update: purged by watermark', { domain, collection, id, ts: remoteMeta.ts });
+    return;
+  }
+
   const fallback = sanitizeSchemaHint(options.schema);
   if (options.schema && !fallback) {
     console.warn('[sync] ignore invalid remote collection schema hint', { domain, collection });
