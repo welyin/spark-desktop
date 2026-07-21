@@ -13,8 +13,29 @@
       </el-descriptions>
 
       <div class="section-wrap">
-        <RegisterPage v-if="!rootStatus.initialized" @register="handleRegister" />
-        <LoginPage v-else-if="!rootStatus.unlocked" @login="handleLogin" />
+        <p v-if="!statusLoaded" class="lede">正在读取账号状态…</p>
+
+        <template v-else-if="!rootStatus.initialized">
+          <RegisterPage v-if="authMode !== 'recover'" @registered="handleRegistered" @recover="authMode = 'recover'" />
+          <RecoverPage v-else @recovered="handleRecovered" @back="authMode = 'register'" />
+        </template>
+
+        <template v-else-if="!rootStatus.unlocked">
+          <LoginPage
+            v-if="authMode === 'login'"
+            :root-id="rootStatus.rootId"
+            @login="handleLogin"
+            @switch="authMode = 'switch'"
+          />
+          <SwitchUserPage
+            v-else-if="authMode === 'switch'"
+            @select="handleSwitchSelect"
+            @register="authMode = 'register'"
+            @back="authMode = 'login'"
+          />
+          <RegisterPage v-else-if="authMode === 'register'" @registered="handleRegistered" @recover="authMode = 'recover'" />
+          <RecoverPage v-else back-label="返回用户列表" @recovered="handleRecovered" @back="authMode = 'switch'" />
+        </template>
 
         <el-card v-else shadow="never" class="inner-card">
           <template #header>
@@ -28,14 +49,6 @@
       </div>
 
       <el-alert v-if="message" :title="message" type="info" :closable="false" show-icon class="block-gap" />
-      <el-alert
-        v-if="mnemonicNotice"
-        :title="mnemonicNotice"
-        type="warning"
-        :closable="false"
-        show-icon
-        class="block-gap"
-      />
     </el-card>
   </section>
 </template>
@@ -45,6 +58,9 @@ import { defineComponent, onMounted, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import RegisterPage from './RegisterPage.vue';
 import LoginPage from './LoginPage.vue';
+import RecoverPage from './RecoverPage.vue';
+import SwitchUserPage from './SwitchUserPage.vue';
+import { errorMessage } from '../../utils/ipc';
 
 type RootStatus = {
   initialized: boolean;
@@ -52,34 +68,42 @@ type RootStatus = {
   rootId: string | null;
 };
 
+type AuthMode = 'login' | 'switch' | 'register' | 'recover';
+
 export default defineComponent({
   name: 'RootAuthCenter',
   components: {
     RegisterPage,
-    LoginPage
+    LoginPage,
+    RecoverPage,
+    SwitchUserPage
   },
   emits: ['open-root-page', 'update-auth-state'],
   setup(_, { emit }) {
     const rootStatus = ref<RootStatus>({ initialized: false, unlocked: false, rootId: null });
     const message = ref('');
-    const mnemonicNotice = ref('');
+    const authMode = ref<AuthMode>('register');
+    const statusLoaded = ref(false);
 
     const refreshStatus = async () => {
       rootStatus.value = await window.electronAPI.rootIdentity.status();
+      statusLoaded.value = true;
+      if (rootStatus.value.initialized && !rootStatus.value.unlocked && authMode.value === 'register') {
+        authMode.value = 'login';
+      }
       emit('update-auth-state', rootStatus.value);
     };
 
-    const handleRegister = async (password: string) => {
-      try {
-        const result = await window.electronAPI.rootIdentity.initialize(password);
-        mnemonicNotice.value = `助记词（仅展示一次，请离线保存）：${result.mnemonic}`;
-        message.value = `注册成功，RootID=${result.rootId}`;
-        ElMessage.success('注册成功');
-        await refreshStatus();
-      } catch (error) {
-        message.value = `注册失败：${error}`;
-        ElMessage.error(message.value);
-      }
+    const handleRegistered = async (rootId: string) => {
+      message.value = `注册成功，RootID=${rootId}`;
+      ElMessage.success('注册成功');
+      await refreshStatus();
+    };
+
+    const handleRecovered = async (rootId: string) => {
+      message.value = `账号已恢复，RootID=${rootId}`;
+      ElMessage.success('账号已恢复');
+      await refreshStatus();
     };
 
     const handleLogin = async (password: string) => {
@@ -89,7 +113,19 @@ export default defineComponent({
         ElMessage.success('登录成功');
         await refreshStatus();
       } catch (error) {
-        message.value = `登录失败：${error}`;
+        message.value = `登录失败：${errorMessage(error)}`;
+        ElMessage.error(message.value);
+      }
+    };
+
+    const handleSwitchSelect = async (rootId: string) => {
+      try {
+        await window.electronAPI.rootIdentity.setActive(rootId);
+        authMode.value = 'login';
+        message.value = '';
+        await refreshStatus();
+      } catch (error) {
+        message.value = `切换失败：${errorMessage(error)}`;
         ElMessage.error(message.value);
       }
     };
@@ -99,9 +135,10 @@ export default defineComponent({
         await window.electronAPI.rootIdentity.lock();
         message.value = '已退出登录';
         ElMessage.success(message.value);
+        authMode.value = 'login';
         await refreshStatus();
       } catch (error) {
-        message.value = `退出失败：${error}`;
+        message.value = `退出失败：${errorMessage(error)}`;
         ElMessage.error(message.value);
       }
     };
@@ -117,9 +154,12 @@ export default defineComponent({
     return {
       rootStatus,
       message,
-      mnemonicNotice,
-      handleRegister,
+      authMode,
+      statusLoaded,
+      handleRegistered,
+      handleRecovered,
       handleLogin,
+      handleSwitchSelect,
       handleLogout,
       openRootPage
     };

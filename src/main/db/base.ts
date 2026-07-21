@@ -24,6 +24,7 @@ export type DocumentValue = Record<string, unknown>;
  */
 export class LevelDB {
   private db?: Level<string, string>;
+  private baseName: string;
   private currentPath: string;
   private openPromise: Promise<void> | null = null;
   private opened = false;
@@ -32,12 +33,30 @@ export class LevelDB {
    * 构造函数，传入数据库目录名（默认 'spark-leveldb'）
    */
   constructor(name = 'spark-leveldb') {
+    this.baseName = name;
     this.currentPath = path.join(app.getPath('userData'), name);
+  }
+
+  /** 当前数据库目录名（相对 userData） */
+  get name() {
+    return this.baseName;
   }
 
   /** 当前数据库路径 */
   get path() {
     return this.currentPath;
+  }
+
+  /**
+   * 重新指向另一个库目录（多用户切换随身份切存储）。
+   * 仅允许在完全关闭状态下调用
+   */
+  reconfigure(name: string): void {
+    if (this.opened || this.openPromise || this.db) {
+      throw new Error('LevelDB must be fully closed before reconfigure');
+    }
+    this.baseName = name;
+    this.currentPath = path.join(app.getPath('userData'), name);
   }
 
   /** 是否已经打开 */

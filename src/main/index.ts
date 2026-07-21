@@ -1,7 +1,7 @@
 import { app, BrowserWindow } from 'electron';
 import { initPluginMarketService } from './plugin-market';
 import { initUpdaterService, getUpdaterService } from './updater';
-import { ensureCoreServicesStarted } from './bootstrap';
+import { ensureCoreServicesStarted, migrateLegacyStorageIfNeeded } from './bootstrap';
 import { registerAllIpcHandlers } from './ipc';
 import { createWindow } from './windows';
 
@@ -21,6 +21,8 @@ app.whenReady().then(() => {
     }
 
     try {
+      // 旧版单用户布局迁移（身份文件 + 库目录），须在开库前完成
+      await migrateLegacyStorageIfNeeded();
       await ensureCoreServicesStarted();
     } catch (error) {
       console.error('[main] failed to start core services automatically', error);

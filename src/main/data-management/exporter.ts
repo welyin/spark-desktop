@@ -10,7 +10,7 @@ import { KEY_RANGE_UPPER_BOUND } from './constants';
  * 逻辑 dump 而非 LevelDB 目录拷贝：应用层一致（无文件锁问题）、跨机器可读、
  * 未来可配合独立工具做离线核验。
  *
- * 注：RootID 身份不在 LevelDB 中（root-identity.json 单独存放且经密码加密），
+ * 注：RootID 身份不在 LevelDB 中（identities/ 目录单独存放且经密码加密），
  * 本导出不包含身份信息；身份备份走助记词路径。
  */
 

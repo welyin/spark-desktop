@@ -1,4 +1,6 @@
 import { app, powerMonitor } from 'electron';
+import { access, rename } from 'fs/promises';
+import path from 'path';
 import { levelDB, ensureSystemDomainInitialized } from './db';
 import { initP2PNode, getP2PNode, isP2PInitialized } from './p2p/index';
 import { KeepaliveScheduler } from './p2p/keepalive';
@@ -126,16 +128,103 @@ export function stopDataMaintenance(): void {
   dataManagementService.stop();
 }
 
-export async function ensureCoreServicesStarted(): Promise<void> {
-  try {
-    await levelDB.open();
+/** 每个用户一个独立的 LevelDB 目录（多用户数据隔离，类系统多账户） */
+export function storageNameForRootId(rootId: string): string {
+  return `spark-leveldb-${rootId.slice(0, 16)}`;
+}
 
-    try {
-      await ensureSystemDomainInitialized(levelDB);
-      console.log('[main] system domain initialized');
-    } catch (err) {
-      console.error('[main] failed to initialize system domain', err);
-    }
+/**
+ * 让 LevelDB 指向当前活跃身份的专属库目录：不一致时先完整停机
+ * （保活/数据治理/P2P/关库），再重指向。服务单例持有的是 levelDB 对象
+ * 引用而非路径，重指向后透明生效；P2P 节点每次 start 都从库里现读身份
+ */
+export async function ensureStorageMatchesIdentity(): Promise<void> {
+  const rootId = await rootIdentityManager.getActiveRootId();
+  if (!rootId) {
+    return;
+  }
+  const target = storageNameForRootId(rootId);
+  if (levelDB.name === target) {
+    return;
+  }
+  console.log('[main] switching storage for active user', { from: levelDB.name, to: target });
+  stopOrganizationKeepalive();
+  stopDataMaintenance();
+  if (isP2PInitialized() && getP2PNode().isStarted()) {
+    await getP2PNode().stop();
+  }
+  if (levelDB.isOpen) {
+    await levelDB.close();
+  }
+  levelDB.reconfigure(target);
+}
+
+/**
+ * 旧版单用户库目录迁移：spark-leveldb → spark-leveldb-<rootId16>。
+ * 仅在启动早期（库尚未打开）调用。
+ * 注：目标目录已存在时旧目录原样保留（仅"降级再升级"边缘场景会出现），
+ * 自动删除用户数据目录的风险大于磁盘占用，故不清理
+ */
+export async function migrateLegacyStorageIfNeeded(): Promise<void> {
+  const rootId = await rootIdentityManager.getActiveRootId();
+  if (!rootId || levelDB.isOpen) {
+    return;
+  }
+  const userData = app.getPath('userData');
+  const legacyPath = path.join(userData, 'spark-leveldb');
+  const targetPath = path.join(userData, storageNameForRootId(rootId));
+  try {
+    await access(targetPath);
+    return; // 已是按用户布局
+  } catch {
+    // 目标不存在，继续尝试迁移
+  }
+  try {
+    await rename(legacyPath, targetPath);
+    console.log('[main] migrated legacy leveldb dir to per-user storage');
+  } catch {
+    // 无旧库目录（新装或已迁移）
+  }
+}
+
+let coreServicesChain: Promise<void> = Promise.resolve();
+
+/** 串行入队，避免切用户时的"停机→换库→重启"与并发 ensureReady 交叠 */
+function enqueueCoreServices(task: () => Promise<void>): Promise<void> {
+  const run = coreServicesChain.then(task);
+  coreServicesChain = run.catch(() => {
+    // 失败不污染后续调用链
+  });
+  return run;
+}
+
+async function doEnsureStorageReady(): Promise<void> {
+  await ensureStorageMatchesIdentity();
+  await levelDB.open();
+  try {
+    await ensureSystemDomainInitialized(levelDB);
+    console.log('[main] system domain initialized');
+  } catch (err) {
+    console.error('[main] failed to initialize system domain', err);
+  }
+}
+
+/**
+ * 快速路径（登录/注册/恢复 IPC 返回前必须 await）：只做到存储对齐 + 开库，
+ * 保证渲染进程随后的查询不会命中上一个用户的库或关库窗口
+ */
+export function ensureStorageReady(): Promise<void> {
+  return enqueueCoreServices(doEnsureStorageReady);
+}
+
+/** 串行化的核心服务启动入口（含 P2P 启动与保活，可留后台执行） */
+export function ensureCoreServicesStarted(): Promise<void> {
+  return enqueueCoreServices(doEnsureCoreServicesStarted);
+}
+
+async function doEnsureCoreServicesStarted(): Promise<void> {
+  try {
+    await doEnsureStorageReady();
 
     if (!isP2PInitialized()) {
       initP2PNode(levelDB, {

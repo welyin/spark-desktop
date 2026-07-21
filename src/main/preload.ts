@@ -312,10 +312,24 @@ export type ElectronAPI = {
   rootIdentity: {
     status: () => Promise<{ initialized: boolean; unlocked: boolean; rootId: string | null }>;
     initialize: (password: string) => Promise<{ rootId: string; mnemonic: string }>;
-    unlock: (password: string) => Promise<{ rootId: string }>;
+    unlock: (password: string, rootId?: string) => Promise<{ rootId: string }>;
     lock: () => Promise<{ success: boolean }>;
     sign: (payload: string) => Promise<{ rootId: string; signature: string; payloadHash: string }>;
     deriveDomain: (domain: string) => Promise<{ domain: string; domainId: string; publicKey: string; derivationPath: string }>;
+    /** 本设备已知身份列表（切换用户） */
+    listIdentities: () => Promise<Array<{ rootId: string; createdAt: number; active: boolean }>>;
+    /** 切换登录目标用户（仅改指针，解锁时生效） */
+    setActive: (rootId: string) => Promise<{ success: boolean }>;
+    /** 密码门控再次查看助记词 */
+    revealMnemonic: (password: string) => Promise<{ mnemonic: string }>;
+    /** 导出加密备份载荷（备份二维码内容，密文不敏感） */
+    backupPayload: () => Promise<{ payload: string }>;
+    /** 录入助记词时逐词校验（返回词数组与词表外词下标，供高亮） */
+    checkMnemonic: (input: string) => Promise<{ words: string[]; invalidIndexes: number[] }>;
+    /** 助记词恢复（最高权限，设置新密码） */
+    recoverMnemonic: (mnemonic: string, newPassword: string) => Promise<{ rootId: string }>;
+    /** 加密备份二维码恢复（需原登录密码） */
+    recoverBackup: (payload: string, password: string) => Promise<{ rootId: string }>;
   };
   updater: {
     status: () => Promise<{
@@ -486,10 +500,17 @@ const api = {
   rootIdentity: {
     status: () => ipcRenderer.invoke('root-status'),
     initialize: (password: string) => ipcRenderer.invoke('root-init', password),
-    unlock: (password: string) => ipcRenderer.invoke('root-unlock', password),
+    unlock: (password: string, rootId?: string) => ipcRenderer.invoke('root-unlock', password, rootId),
     lock: () => ipcRenderer.invoke('root-lock'),
     sign: (payload: string) => ipcRenderer.invoke('root-sign', payload),
-    deriveDomain: (domain: string) => ipcRenderer.invoke('root-derive-domain', domain)
+    deriveDomain: (domain: string) => ipcRenderer.invoke('root-derive-domain', domain),
+    listIdentities: () => ipcRenderer.invoke('root-list-identities'),
+    setActive: (rootId: string) => ipcRenderer.invoke('root-set-active', rootId),
+    revealMnemonic: (password: string) => ipcRenderer.invoke('root-reveal-mnemonic', password),
+    backupPayload: () => ipcRenderer.invoke('root-backup-payload'),
+    checkMnemonic: (input: string) => ipcRenderer.invoke('root-mnemonic-check', input),
+    recoverMnemonic: (mnemonic: string, newPassword: string) => ipcRenderer.invoke('root-recover-mnemonic', mnemonic, newPassword),
+    recoverBackup: (payload: string, password: string) => ipcRenderer.invoke('root-recover-backup', payload, password)
   },
   updater: {
     status: () => ipcRenderer.invoke('update-status'),
