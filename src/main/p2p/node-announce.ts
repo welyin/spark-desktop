@@ -1,5 +1,10 @@
 import nacl from 'tweetnacl';
-import { NODE_ANNOUNCE_ACCEPT_MIN_INTERVAL_MS, NODE_ANNOUNCE_MAX_AGE_MS, OVERLAY_TOPIC } from './constants';
+import {
+  NODE_ANNOUNCE_ACCEPT_MIN_INTERVAL_MS,
+  NODE_ANNOUNCE_ACCEPT_MIN_INTERVAL_ON_CHANGE_MS,
+  NODE_ANNOUNCE_MAX_AGE_MS,
+  OVERLAY_TOPIC
+} from './constants';
 import type { OverlayPeerStore } from './overlay-peer-store';
 
 /**
@@ -144,7 +149,7 @@ export class NodeAnnounceService {
       return false;
     }
 
-    if (!this.checkAcceptRateLimit(announce.peerId)) {
+    if (!(await this.checkAcceptRateLimit(announce))) {
       return false;
     }
 
@@ -156,14 +161,23 @@ export class NodeAnnounceService {
     return true;
   }
 
-  /** 同一 peerId 两次接受的最小间隔（防刷） */
-  private checkAcceptRateLimit(peerId: string): boolean {
+  /**
+   * 同一 peerId 两次接受的最小间隔（防刷）。
+   * 携带邻居池中未知的新地址时（节点换地址后的即时补发）放宽到较短下限，
+   * 否则刚接受过旧地址公告的对端会把新地址公告吞掉长达一个常规周期。
+   */
+  private async checkAcceptRateLimit(announce: NodeAnnounce): Promise<boolean> {
     const now = Date.now();
-    const lastAcceptedAt = this.lastAcceptedAtByPeerId.get(peerId) ?? 0;
-    if (now - lastAcceptedAt < NODE_ANNOUNCE_ACCEPT_MIN_INTERVAL_MS) {
+    const lastAcceptedAt = this.lastAcceptedAtByPeerId.get(announce.peerId) ?? 0;
+    const knownAddresses = (await this.deps.overlayPeers.get(announce.peerId))?.addresses ?? [];
+    const carriesNewAddress = announce.addresses.some((addr) => !knownAddresses.includes(addr));
+    const minInterval = carriesNewAddress
+      ? NODE_ANNOUNCE_ACCEPT_MIN_INTERVAL_ON_CHANGE_MS
+      : NODE_ANNOUNCE_ACCEPT_MIN_INTERVAL_MS;
+    if (now - lastAcceptedAt < minInterval) {
       return false;
     }
-    this.lastAcceptedAtByPeerId.set(peerId, now);
+    this.lastAcceptedAtByPeerId.set(announce.peerId, now);
     return true;
   }
 

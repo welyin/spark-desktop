@@ -160,7 +160,7 @@ export class OrgPullSyncService {
     const requesterPeerId = declaredPeerId || remotePeerId;
 
     if (request.type === 'org-pull-list') {
-      const organizations = await this.listAllOrganizations();
+      let organizations = await this.listAllOrganizations();
 
       // 仅当请求方确实是某个组织的成员（按 rootId 判定，兼容 peerId 变更后的重认领）
       // 才处理其捎带的节点地址声明；否则未认证请求不得触发 claim 验签与落库扫描
@@ -171,6 +171,9 @@ export class OrgPullSyncService {
         if (isKnownMember) {
           try {
             await this.deps.onNodeInfoClaim(request.payload.nodeInfoClaim, { remotePeerId: remotePeerId ?? undefined });
+            // claim 可能已回填成员地址并 bump 版本：必须重新读取，
+            // 否则响应里的旧版本会让拉取方误判"本地更新"而把记录回推
+            organizations = await this.listAllOrganizations();
           } catch (error) {
             console.warn('[p2p][org-pull] node info claim handling failed', {
               requesterRootId,

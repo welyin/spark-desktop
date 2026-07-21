@@ -10,6 +10,7 @@
     "make": "electron-forge make",
     "build": "electron-forge make",
     "plugin:package:weibo": "node scripts/plugins/build-weibo-package.mjs",
+    "p2p:lab": "esbuild scripts/p2p-lab.mts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/electron-stub.mjs --outfile=node_modules/.cache/p2p-lab.mjs && node node_modules/.cache/p2p-lab.mjs",
     "test": "vitest",
     "test:unit": "vitest run"
   },
@@ -45,6 +46,7 @@
     "@vitejs/plugin-vue": "^4.0.0",
     "@vue/test-utils": "^2.4.11",
     "electron": "^26.0.0",
+    "esbuild": "^0.21.5",
     "jsdom": "^19.0.0",
     "typescript": "^5.1.6",
     "vite": "^5.0.0",

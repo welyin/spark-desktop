@@ -192,6 +192,33 @@ describe('NodeAnnounceService', () => {
     expect(await service.handlePubsubMessage({ detail: { topic: OVERLAY_TOPIC, data: Buffer.from(second) } })).toBe(false);
   });
 
+  it('accepts announces carrying fresh addresses within the regular rate-limit window', async () => {
+    const identity = await makeIdentity();
+    const db = new MemoryDb();
+    const service = makeService(db, { peerId: { toString: () => 'QmOther' } });
+
+    // 先接受旧地址公告（消费常规限流窗口）
+    const first = await signAnnounce(identity);
+    expect(await service.handlePubsubMessage({ detail: { topic: OVERLAY_TOPIC, data: Buffer.from(first) } })).toBe(true);
+
+    // 模拟"旧公告接受于 6 秒前"：越过换地址 5s 下限，但仍处于常规 60s 窗口内
+    //（即 lab 中节点快速换端口重启、对端秒级前刚接受过旧公告的场景）
+    (service as any).lastAcceptedAtByPeerId.set(identity.peerIdString, Date.now() - 6_000);
+
+    // 同窗口内、同地址的重复公告仍被限流
+    const repeat = await signAnnounce(identity);
+    expect(await service.handlePubsubMessage({ detail: { topic: OVERLAY_TOPIC, data: Buffer.from(repeat) } })).toBe(false);
+
+    // 节点换端口重启后的即时补发携带新地址：不受常规 60s 限流约束，
+    // 否则"地址变化立即补发"机制会被接受侧限流整体吞掉
+    const moved = await signAnnounce(identity, { addresses: ['/ip4/1.2.3.4/tcp/16001/ws'] });
+    expect(await service.handlePubsubMessage({ detail: { topic: OVERLAY_TOPIC, data: Buffer.from(moved) } })).toBe(true);
+
+    const pool = await new OverlayPeerStore(db as any).listAll();
+    expect(pool[0]?.peerId).toBe(identity.peerIdString);
+    expect(pool[0]?.addresses).toContain('/ip4/1.2.3.4/tcp/16001/ws');
+  });
+
   it('ignores malformed payloads and self announces', async () => {
     const identity = makeIdentity();
     const service = makeService(new MemoryDb(), { peerId: { toString: () => identity.peerIdString } });

@@ -82,8 +82,17 @@ export const NODE_ANNOUNCE_INTERVAL_MS = 5 * 60_000;
 
 /**
  * 接收侧限流：同一 peerId 的 announce 两次接受的最小间隔。
+ * 例外：announce 携带邻居池中未知的新地址时（换地址即时补发），
+ * 改用 NODE_ANNOUNCE_ACCEPT_MIN_INTERVAL_ON_CHANGE_MS 的较短下限。
  */
 export const NODE_ANNOUNCE_ACCEPT_MIN_INTERVAL_MS = 60_000;
+
+/**
+ * 地址变化时的接收侧限流下限（防刷保留的最小间隔）。
+ * 常规 60s 限流会把"刚接受过旧公告"的对端上的新地址公告整个吞掉，
+ * 使"地址变化时立即补发"机制失效（新地址要等下一个 5 分钟周期才传播）。
+ */
+export const NODE_ANNOUNCE_ACCEPT_MIN_INTERVAL_ON_CHANGE_MS = 5_000;
 
 /**
  * announce 时间戳新鲜度窗口（与 nodeInfoClaim 口径一致）。

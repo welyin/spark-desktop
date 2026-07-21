@@ -647,7 +647,9 @@ export class P2PNode {
           // 预约所得 /p2p-circuit 地址自动进入 getMultiaddrs() 随邀请码/声明传播
           circuitRelayTransport()
         ],
-        streamMuxers: [mplex()],
+        // disconnectThreshold 默认仅 5 条新流/秒：本栈建连初期 identify/gossipsub/
+        // version/org-share/AutoNAT 回拨叠加轻松超过，会被 mplex 误判攻击而断连
+        streamMuxers: [mplex({ disconnectThreshold: 100 })],
         connectionEncrypters: [noise()],
         peerDiscovery: [mdns()],
         services: {
@@ -701,23 +703,38 @@ export class P2PNode {
 
       if (typeof this.node.addEventListener === 'function') {
         this.node.addEventListener('peer:connect', async (event: any) => {
-          const peerId = event?.detail?.toString?.() ?? event?.detail?.remotePeer?.toString?.() ?? 'unknown';
-          console.log('[p2p] peer connected', peerId);
-          if (peerId !== 'unknown') {
-            await this.markPeerConnected(peerId);
-            // 任何成功连接都沉淀进覆盖网邻居池（组织无关），
-            // 使"曾经连通过"本身成为覆盖网的地基
-            const remoteAddr = this.getRemoteAddrString(peerId);
-            await this.overlayPeers.remember(peerId, remoteAddr ? [remoteAddr] : [], 'connect');
-            void this.observePeerVersionByDirectProtocol(peerId);
+          try {
+            const peerId = event?.detail?.toString?.() ?? event?.detail?.remotePeer?.toString?.() ?? 'unknown';
+            console.log('[p2p] peer connected', peerId);
+            if (peerId !== 'unknown') {
+              await this.markPeerConnected(peerId);
+              // 任何成功连接都沉淀进覆盖网邻居池（组织无关），
+              // 使"曾经连通过"本身成为覆盖网的地基
+              const remoteAddr = this.getRemoteAddrString(peerId);
+              await this.overlayPeers.remember(peerId, remoteAddr ? [remoteAddr] : [], 'connect');
+              void this.observePeerVersionByDirectProtocol(peerId);
+            }
+          } catch (error) {
+            // 停止/关闭阶段的迟到事件落在已关闭的 db 上属预期竞态，静默忽略；
+            // 其余异常保留告警，避免掩盖真实处理失败
+            if (!String(error).includes('Database is not open')) {
+              console.warn('[p2p] peer connect handling failed', error);
+            }
           }
         });
 
         this.node.addEventListener('peer:disconnect', async (event: any) => {
-          const peerId = event?.detail?.toString?.() ?? event?.detail?.remotePeer?.toString?.() ?? 'unknown';
-          console.log('[p2p] peer disconnected', peerId);
-          if (peerId !== 'unknown') {
-            await this.markPeerDisconnected(peerId);
+          try {
+            const peerId = event?.detail?.toString?.() ?? event?.detail?.remotePeer?.toString?.() ?? 'unknown';
+            console.log('[p2p] peer disconnected', peerId);
+            if (peerId !== 'unknown') {
+              await this.markPeerDisconnected(peerId);
+            }
+          } catch (error) {
+            // 与 connect 处理一致：仅静默关闭竞态，其余异常保留告警
+            if (!String(error).includes('Database is not open')) {
+              console.warn('[p2p] peer disconnect handling failed', error);
+            }
           }
         });
       }

@@ -48,7 +48,8 @@ export class OverlayPeerStore {
     return `${P2P_OVERLAY_PEER_PREFIX}${peerId}`;
   }
 
-  private async get(peerId: string): Promise<OverlayPeerRecord | null> {
+  /** 读取单个邻居记录（node-announce 据此判断地址是否变化，放行即时补发） */
+  async get(peerId: string): Promise<OverlayPeerRecord | null> {
     const cached = this.cache.get(peerId);
     if (cached) {
       return { ...cached, addresses: [...cached.addresses] };

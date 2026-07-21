@@ -156,6 +156,53 @@ describe('OrgPullSyncService', () => {
     expect(stillOk.ok).toBe(true);
   });
 
+  it('re-reads organizations after applying a claim so list responses carry fresh versions', async () => {
+    const db = new MemoryDb() as any;
+    const rootId = 'a'.repeat(64);
+    const requesterRootId = 'b'.repeat(64);
+
+    const baseRecord = {
+      orgId: 'org_claim_reread',
+      name: 'ReRead Org',
+      description: '',
+      createdAt: 1,
+      createdBy: rootId,
+      updatedAt: 2,
+      sync: { versions: { transactionsVersion: 1 } },
+      members: [
+        { rootId, role: 'admin', joinedAt: 1, addedBy: rootId },
+        { rootId: requesterRootId, role: 'member', joinedAt: 1, addedBy: rootId }
+      ]
+    };
+    await db.put('org:meta:org_claim_reread', JSON.stringify(baseRecord));
+
+    const service = new OrgPullSyncService({
+      db,
+      identityContext: { getCurrentRootId: async () => rootId },
+      runtimeImport: async () => ({}),
+      getNode: () => null,
+      connectPeer: async () => {},
+      onNodeInfoClaim: async () => {
+        // 模拟 claim 回填落库：bump 版本（真实实现由 OrganizationService 完成）
+        await db.put('org:meta:org_claim_reread', JSON.stringify({
+          ...baseRecord,
+          updatedAt: 3,
+          sync: { versions: { transactionsVersion: 2 } }
+        }));
+      }
+    });
+
+    const response = await service.handleDirectRequest({
+      type: 'org-pull-list',
+      payload: { requesterRootId, requesterPeerId: 'QmRequester', nodeInfoClaim: { marker: 'claim' } }
+    }, { connection: { remotePeer: 'QmRemote' } });
+
+    expect(response.ok).toBe(true);
+    // 响应必须携带 claim 回填后的最新版本，否则拉取方会误判"本地更新"并回推记录
+    const org = response.type === 'org-pull-list-response' ? response.organizations?.[0] : undefined;
+    expect(org?.sync).toEqual({ transactionsVersion: 2 });
+  });
+
   it('does not process node info claims from non-member requesters', async () => {
     const db = new MemoryDb() as any;
     const rootId = 'a'.repeat(64);
