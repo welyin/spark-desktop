@@ -9,12 +9,16 @@
  *   overlay   覆盖网基础：connect 沉淀 / peer-exchange / node-announce / org-recovery 协议
  *   invite    组织邀请码加入全流程：建组织 → 预录成员 → 邀请码加入 → claim 回填 →  gossip 扩散
  *   recovery  组织失联后覆盖网恢复：管理员与成员换地址重启，离线成员经桥接节点定向找回
+ *   interop   TS↔Rust 互通收官实验：yamux 协商 / gossipsub 互见 / 双向签名 update /
+ *             node-announce 双向 / peer-exchange 双向（驱动 code/core 的 lab_node 例程）
  *
  * 每个节点使用临时目录（os.tmpdir 下），运行结束自动清理。
  */
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'fs';
-import { tmpdir } from 'os';
+import { tmpdir, homedir } from 'os';
 import path from 'path';
+import { spawn, spawnSync } from 'child_process';
+import { createInterface } from 'readline';
 import nacl from 'tweetnacl';
 import { Level } from 'level';
 import { P2PNode } from '../src/main/p2p/p2p-node.js';
@@ -65,6 +69,10 @@ class LabDb {
 
   async put(key: string, value: string): Promise<void> {
     await this.inner.put(key, value);
+  }
+
+  async batch(operations: Array<{ type: 'put' | 'del'; key: string; value?: string }>): Promise<void> {
+    await this.inner.batch(operations as never);
   }
 
   async del(key: string): Promise<void> {
@@ -118,6 +126,8 @@ class LabNode {
   identity!: LabIdentity;
   p2p!: P2PNode;
   orgs!: OrganizationService;
+  /** 直连版本探测观察记录（/spark/version/1.0.0 对端 appVersion） */
+  readonly observedPeerVersions: Array<{ version: string; peerId: string }> = [];
 
   constructor(readonly name: string, private port: number) {
     this.dir = path.join(labRoot, name);
@@ -158,6 +168,9 @@ class LabNode {
     });
     this.p2p = new P2PNode(this.db as never, rootIdentity, {
       appVersion: 'p2p-lab',
+      onPeerVersionObserved: async (version, peerId) => {
+        this.observedPeerVersions.push({ version, peerId });
+      },
       onNodeInfoClaim: async (claim, context) => {
         await this.orgs.applyNodeInfoClaim(claim as NodeInfoClaim, context);
       },
@@ -207,6 +220,11 @@ class LabNode {
 
   connectedPeerIds(): string[] {
     return this.p2p.getLocalNodeInfo().connectedPeers;
+  }
+
+  /** 直读底层存储（interop 场景验证生产 applyRemoteUpdate 真实落库） */
+  async dbGet(key: string): Promise<string | null> {
+    return this.db.get(key);
   }
 }
 
@@ -408,13 +426,300 @@ async function scenarioRecovery(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// 场景 interop：TS↔Rust 真实互通（驱动 code/core 的 lab_node 例程）
+// ---------------------------------------------------------------------------
+
+/** 轮询直到条件成立，超时即失败。 */
+async function pollUntil(pred: () => boolean | Promise<boolean>, timeoutMs: number, desc: string, intervalMs = 250): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await pred()) return;
+    await sleep(intervalMs);
+  }
+  fail(`超时：${desc}`);
+}
+
+/** 定位 code/core（npm run 时 cwd=desktop；兜底按本文件位置反推）。 */
+function resolveCoreDir(): string {
+  const candidates = [
+    path.resolve(process.cwd(), '../code/core'),
+    path.resolve(new URL('.', import.meta.url).pathname, '../../../code/core')
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(path.join(candidate, 'Cargo.toml'))) return candidate;
+  }
+  fail(`找不到 code/core（尝试：${candidates.join(', ')}）`);
+}
+
+/**
+ * Rust lab_node 子进程驱动：stdio JSON 行协议。
+ * 协议见 code/core/examples/lab_node.rs 头注释。
+ */
+class RustLabNode {
+  peerId = '';
+  wsAddr = '';
+
+  private proc!: ReturnType<typeof spawn>;
+  private cmdSeq = 0;
+  private readonly buffer: any[] = [];
+  private readonly waiters: Array<{ pred: (msg: any) => boolean; resolve: (msg: any) => void; reject: (err: Error) => void; timer: NodeJS.Timeout }> = [];
+  private readonly pendingCmds = new Map<number, { resolve: (data: any) => void; reject: (err: Error) => void; timer: NodeJS.Timeout }>();
+  private exited = false;
+
+  static async start(port: number): Promise<RustLabNode> {
+    const coreDir = resolveCoreDir();
+    const binary = path.join(coreDir, 'target/debug/examples/lab_node');
+    if (!existsSync(binary)) {
+      log('lab_node 二进制缺失，先执行 cargo build --example lab_node …');
+      const env = { ...process.env, PATH: `${homedir()}/.cargo/bin:${process.env.PATH ?? ''}` };
+      const build = spawnSync('cargo', ['build', '--example', 'lab_node'], { cwd: coreDir, env, stdio: 'inherit' });
+      if (build.status !== 0) fail('cargo build --example lab_node 失败');
+    }
+    const node = new RustLabNode();
+    node.proc = spawn(binary, ['--port', String(port)], { stdio: ['pipe', 'pipe', 'inherit'] });
+    node.proc.on('exit', (code) => {
+      node.exited = true;
+      const err = new Error(`rust lab_node 意外退出 code=${code}`);
+      for (const waiter of node.waiters.splice(0)) {
+        clearTimeout(waiter.timer);
+        waiter.reject(err);
+      }
+      for (const [, pending] of node.pendingCmds) {
+        clearTimeout(pending.timer);
+        pending.reject(err);
+      }
+      node.pendingCmds.clear();
+    });
+    const rl = createInterface({ input: node.proc.stdout! });
+    rl.on('line', (line) => node.onLine(line));
+    const ready = await node.waitFor((msg) => msg.type === 'ready', 20000, '等待 rust 节点 ready');
+    node.peerId = ready.peerId;
+    const ws = (ready.addresses as string[]).find((addr) => addr.includes('/ws'));
+    if (!ws) fail(`rust 节点无 ws 监听地址：${JSON.stringify(ready.addresses)}`);
+    node.wsAddr = ws;
+    log(`rust lab_node 已启动 peerId=${node.peerId.slice(0, 16)}… ws=${ws}`);
+    return node;
+  }
+
+  private onLine(line: string): void {
+    let msg: any;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (msg.type === 'result' && typeof msg.id === 'number') {
+      const pending = this.pendingCmds.get(msg.id);
+      if (pending) {
+        this.pendingCmds.delete(msg.id);
+        clearTimeout(pending.timer);
+        if (msg.ok) pending.resolve(msg.data);
+        else pending.reject(new Error(String(msg.error)));
+        return;
+      }
+    }
+    this.buffer.push(msg);
+    for (let i = this.waiters.length - 1; i >= 0; i -= 1) {
+      const waiter = this.waiters[i]!;
+      if (waiter.pred(msg)) {
+        this.waiters.splice(i, 1);
+        clearTimeout(waiter.timer);
+        waiter.resolve(msg);
+      }
+    }
+  }
+
+  /** 等待一条匹配行（先查缓冲，再等新行）；超时 reject。 */
+  waitFor(pred: (msg: any) => boolean, timeoutMs: number, desc: string): Promise<any> {
+    const hit = this.buffer.find(pred);
+    if (hit) return Promise.resolve(hit);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const index = this.waiters.findIndex((w) => w.resolve === resolve);
+        if (index >= 0) this.waiters.splice(index, 1);
+        reject(new Error(`等待 rust 输出超时：${desc}`));
+      }, timeoutMs);
+      this.waiters.push({ pred, resolve, reject, timer });
+    });
+  }
+
+  /** 发送命令并等待 result。 */
+  cmd(command: Record<string, unknown>, timeoutMs = 15000): Promise<any> {
+    if (this.exited) return Promise.reject(new Error('rust lab_node 已退出'));
+    const id = ++this.cmdSeq;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingCmds.delete(id);
+        reject(new Error(`rust 命令超时：${JSON.stringify(command)}`));
+      }, timeoutMs);
+      this.pendingCmds.set(id, { resolve, reject, timer });
+      this.proc.stdin!.write(`${JSON.stringify({ ...command, id })}\n`);
+    });
+  }
+
+  async overlayPool(): Promise<any[]> {
+    return await this.cmd({ cmd: 'overlay-pool' });
+  }
+
+  async stop(): Promise<void> {
+    if (this.exited) return;
+    try {
+      await this.cmd({ cmd: 'shutdown' }, 5000);
+    } catch {
+      // 已退出也接受
+    }
+    if (!this.exited) {
+      this.proc.kill('SIGKILL');
+    }
+  }
+}
+
+async function scenarioInterop(): Promise<void> {
+  // console.warn 探针：签名类丢弃是互通失败信号，其余告警（版本探测重试等）只记录不失败
+  const signatureWarnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    const text = args.map((arg) => String(arg)).join(' ');
+    if (text.includes('signature invalid') || text.includes('unsigned data message')) {
+      signatureWarnings.push(text);
+    }
+    originalWarn.apply(console, args);
+  };
+
+  const rust = await RustLabNode.start(0);
+  const ts = new LabNode('TS-interop', 16141);
+  try {
+    await ts.start();
+
+    // ----- 场景 A：互连 + yamux 协商 + gossipsub topic 互见 -----
+    await ts.p2p.connectPeer({ peerId: rust.peerId, addresses: [rust.wsAddr] });
+    await pollUntil(() => ts.connectedPeerIds().includes(rust.peerId), 10000, 'TS 侧未见 rust 连接');
+    await rust.waitFor((msg) => msg.type === 'event' && msg.event === 'peer-connected' && msg.peerId === ts.peerId, 10000, 'rust 侧未见 TS 连接');
+
+    // yamux 协商证据：TS 连接对象的 multiplexer 字段
+    const conn = (ts.p2p as any).node.getConnections().find((item: any) => item?.remotePeer?.toString?.() === rust.peerId);
+    const muxer = conn?.multiplexer ?? 'unknown';
+    if (muxer !== '/yamux/1.0.0') fail(`muxer 协商结果异常：${muxer}（连接属性：${JSON.stringify(Object.keys(conn ?? {}))}）`);
+    log(`✓ A1 连接建立，muxer=${muxer}（rust-libp2p 仅支持 yamux，协商成功即证明 yamux 链路）`);
+
+    await pollUntil(() => ts.p2p.getLocalNodeInfo().sparkSyncSubscribers.includes(rust.peerId), 15000, 'TS 未见 rust 订阅 spark-sync');
+    await pollUntil(async () => (await rust.cmd({ cmd: 'info' })).sparkSyncSubscribers.includes(ts.peerId), 15000, 'rust 未见 TS 订阅 spark-sync');
+    log('✓ A2 gossipsub spark-sync topic 双向互相可见');
+
+    // 版本探测双向（附检 /spark/version/1.0.0 直连协议）
+    await pollUntil(() => ts.observedPeerVersions.some((item) => item.version === 'rust-lab-node'), 10000, 'TS 未观察到 rust appVersion');
+    await rust.waitFor((msg) => msg.type === 'event' && msg.event === 'peer-version' && msg.appVersion === 'p2p-lab', 10000, 'rust 未观察到 TS appVersion');
+    log('✓ A3 /spark/version/1.0.0 版本探测双向成功');
+
+    // ----- 场景 B：双向签名 update（TS=PEM pubKey，Rust=SPKI DER base64 pubKey） -----
+    const tsMeta = { vv: { [ts.peerId]: 1 }, ts: Date.now(), nodeId: ts.peerId };
+    let applied: any = null;
+    const tsSendDeadline = Date.now() + 15000;
+    while (!applied && Date.now() < tsSendDeadline) {
+      await ts.p2p.broadcast('spark-sync', {
+        type: 'update',
+        domain: 'interop',
+        collection: 'items',
+        id: 'ts-doc-1',
+        payload: { text: 'hello from ts' },
+        meta: tsMeta
+      });
+      applied = await rust
+        .waitFor((msg) => msg.type === 'applied' && msg.id === 'ts-doc-1', 1500, 'rust 应用 TS update')
+        .catch(() => null);
+    }
+    if (!applied) fail('rust 未在期限内应用 TS 的签名 update');
+    if (applied.domain !== 'interop' || applied.collection !== 'items' || applied.payload?.text !== 'hello from ts') {
+      fail(`rust 侧落库内容不符：${JSON.stringify(applied)}`);
+    }
+    log('✓ B1 TS 签名 update → rust 验签通过并触发落库回调');
+
+    // rust→TS：挂观察者抓原始信封，用生产 verifySignature 复核（走 DER base64 新路径）
+    const pubsub = (ts.p2p as any).node.services.pubsub;
+    let captured: any = null;
+    const observer = (raw: any) => {
+      const msg = raw?.detail ?? raw;
+      if (msg?.topic !== 'spark-sync') return;
+      try {
+        const parsed = JSON.parse(Buffer.from(msg.data).toString('utf8'));
+        if (parsed?.type === 'update' && parsed?.id === 'rust-doc-1') captured = parsed;
+      } catch {
+        // 非目标消息
+      }
+    };
+    pubsub.addEventListener('message', observer);
+    const rustSendDeadline = Date.now() + 15000;
+    while (!captured && Date.now() < rustSendDeadline) {
+      await rust.cmd({ cmd: 'broadcast-update', domain: 'interop', collection: 'items', docId: 'rust-doc-1', payload: { text: 'hello from rust' } }).catch(() => null);
+      await sleep(700);
+    }
+    pubsub.removeEventListener('message', observer);
+    if (!captured) fail('TS 未在期限内收到 rust 的 update');
+    if (typeof captured.pubKey !== 'string' || captured.pubKey.includes('BEGIN PUBLIC KEY')) {
+      fail(`rust pubKey 线形异常（应为 SPKI DER base64）：${String(captured.pubKey).slice(0, 60)}`);
+    }
+    const verifyOk = (ts.p2p as any).verifySignature(captured, captured.pubKey, captured.signature);
+    if (!verifyOk) fail('TS 生产 verifySignature 对 rust DER 信封验签失败');
+    if (signatureWarnings.length > 0) fail(`TS 侧出现签名丢弃告警：${signatureWarnings.join(' | ')}`);
+    log('✓ B2 rust 签名 update（DER base64 pubKey）→ TS 生产验签路径通过且无丢弃');
+
+    // 生产落库链路实证：handler 内部 applyRemoteUpdate 写入 doc:interop:items:rust-doc-1
+    await pollUntil(async () => (await ts.dbGet('doc:interop:items:rust-doc-1')) !== null, 8000, 'TS 未落库 rust-doc-1');
+    const stored = await ts.dbGet('doc:interop:items:rust-doc-1');
+    if (!stored || !stored.includes('hello from rust')) fail(`TS 落库内容不符：${stored}`);
+    log('✓ B3 rust update 经 TS 生产 applyRemoteUpdate 链路真实落库');
+
+    // ----- 场景 C：node-announce 双向交换 -----
+    await rust.cmd({ cmd: 'announce' });
+    await pollUntil(async () => {
+      const entry = (await ts.overlayPool().listAll()).find((item) => item.peerId === rust.peerId);
+      return entry?.verified === true && entry.source === 'announce';
+    }, 15000, 'TS 未接受 rust 的签名 announce');
+    log('✓ C1 rust node-announce → TS 验签通过并 verified 入池');
+
+    await (ts.p2p as any).nodeAnnounce.publishOwnAnnounce();
+    await pollUntil(async () => {
+      const entry = (await rust.overlayPool()).find((item: any) => item.peerId === ts.peerId);
+      return entry?.verified === true;
+    }, 15000, 'rust 未接受 TS 的签名 announce');
+    await rust.waitFor((msg) => msg.type === 'event' && msg.event === 'announce-accepted' && msg.peerId === ts.peerId, 5000, 'rust 未发 AnnounceAccepted 事件');
+    log('✓ C2 TS node-announce → rust 验签通过并 verified 入池');
+
+    // ----- 场景 D：peer-exchange 双向请求响应 -----
+    const hintForRust = 'QmLabInteropHintForRust000000000000000000000';
+    await ts.overlayPool().remember(hintForRust, ['/ip4/127.0.0.1/tcp/19998/ws'], 'announce', true);
+    const rustExchange = await rust.cmd({ cmd: 'exchange', peerId: ts.peerId });
+    if (!(rustExchange?.merged >= 1)) fail(`rust→TS exchange 合并数异常：${JSON.stringify(rustExchange)}`);
+    await pollUntil(async () => {
+      const entry = (await rust.overlayPool()).find((item: any) => item.peerId === hintForRust);
+      return entry?.source === 'exchange' && entry?.verified === false;
+    }, 8000, 'rust 池内未见 exchange 线索');
+    log('✓ D1 rust 发起 peer-exchange → TS 响应 → rust 未验证入池');
+
+    const hintForTs = 'QmLabInteropHintForTs0000000000000000000000';
+    await rust.cmd({ cmd: 'seed-overlay', peerId: hintForTs, addresses: ['/ip4/127.0.0.1/tcp/19999/ws'], verified: true });
+    const merged = await (ts.p2p as any).peerExchange.exchangeWithPeer(rust.peerId);
+    if (!(merged >= 1)) fail(`TS→rust exchange 合并数异常：${merged}`);
+    const learned = (await ts.overlayPool().listAll()).find((item) => item.peerId === hintForTs);
+    if (!learned || learned.source !== 'exchange' || learned.verified) fail(`TS 池内 exchange 线索异常：${JSON.stringify(learned)}`);
+    log('✓ D2 TS 发起 peer-exchange → rust 响应 → TS 未验证入池');
+  } finally {
+    console.warn = originalWarn;
+    await rust.stop().catch(() => {});
+    await ts.stop().catch(() => {});
+  }
+  log('✓ interop 场景全部通过');
+}
+
+// ---------------------------------------------------------------------------
 async function main(): Promise<void> {
   const scenario = process.argv[2] ?? 'overlay';
   log(`实验目录：${labRoot}`);
   const scenarios: Record<string, () => Promise<void>> = {
     overlay: scenarioOverlay,
     invite: scenarioInvite,
-    recovery: scenarioRecovery
+    recovery: scenarioRecovery,
+    interop: scenarioInterop
   };
   const run = scenarios[scenario];
   if (!run) {

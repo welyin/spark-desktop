@@ -33,6 +33,20 @@ type P2PRuntimeOptions = {
 };
 
 /**
+ * 构造信封验签公钥（Ed25519 SPKI）。
+ * 兼容两种线形：TS 广播的 PEM 与 Rust 内核广播的 SPKI DER base64
+ * （PEM 即 DER 的 base64 加头尾；属 Rust 互通桥接，见 code/spec/p2p-messages.md §3.3）。
+ */
+export function createEnvelopeVerifyKey(pubKey: string): crypto.KeyObject {
+  const trimmed = pubKey.trim();
+  if (trimmed.includes('-----BEGIN PUBLIC KEY-----')) {
+    return crypto.createPublicKey(trimmed);
+  }
+  const der = Buffer.from(trimmed, 'base64');
+  return crypto.createPublicKey({ key: der, format: 'der', type: 'spki' });
+}
+
+/**
  * P2P 节点编排器。
  * 职责：
  * - 管理 libp2p 生命周期（start/stop）
@@ -620,6 +634,7 @@ export class P2PNode {
       const { createLibp2p } = await runtimeImport('libp2p');
       const { webSockets } = await runtimeImport('@libp2p/websockets');
       const { mplex } = await runtimeImport('@libp2p/mplex');
+      const { yamux } = await runtimeImport('@chainsafe/libp2p-yamux');
       const { noise } = await runtimeImport('@chainsafe/libp2p-noise');
       const { mdns } = await runtimeImport('@libp2p/mdns');
       const { gossipsub } = await runtimeImport('@libp2p/gossipsub');
@@ -648,8 +663,10 @@ export class P2PNode {
           circuitRelayTransport()
         ],
         // disconnectThreshold 默认仅 5 条新流/秒：本栈建连初期 identify/gossipsub/
-        // version/org-share/AutoNAT 回拨叠加轻松超过，会被 mplex 误判攻击而断连
-        streamMuxers: [mplex({ disconnectThreshold: 100 })],
+        // version/org-share/AutoNAT 回拨叠加轻松超过，会被 mplex 误判攻击而断连。
+        // yamux 为 Rust 内核互通桥接（rust-libp2p 已弃 mplex 仅支持 yamux）：
+        // 列表保留 mplex 在前，TS↔TS 协商仍优先 mplex，TS↔Rust 自动落到 yamux
+        streamMuxers: [mplex({ disconnectThreshold: 100 }), yamux()],
         connectionEncrypters: [noise()],
         peerDiscovery: [mdns()],
         services: {
@@ -954,13 +971,13 @@ export class P2PNode {
     return sig.toString('base64');
   }
 
-  /** 校验消息签名。 */
+  /** 校验消息签名。pubKey 兼容 PEM 与 SPKI DER base64（Rust 内核线形）。 */
   private verifySignature(envelope: P2PMessageBody, pubKeyPem: string, signatureB64: string) {
     try {
       const copy = { ...envelope, signature: undefined } as any;
       const str = JSON.stringify(copy);
       const sig = Buffer.from(signatureB64, 'base64');
-      const pubKey = crypto.createPublicKey(pubKeyPem);
+      const pubKey = createEnvelopeVerifyKey(pubKeyPem);
       return crypto.verify(null, Buffer.from(str), pubKey, sig);
     } catch (err) {
       console.error('[p2p] verifySignature error', err);
