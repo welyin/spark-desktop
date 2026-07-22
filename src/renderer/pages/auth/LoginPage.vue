@@ -1,34 +1,37 @@
 <template>
-  <el-card>
-    <template #header>
-      <div>
-        <h2>用户登录</h2>
-        <p class="hint">登录会解锁 RootID，用于签名与授权。</p>
-      </div>
-    </template>
+  <section class="auth-panel">
+    <h2 class="auth-title">用户登录</h2>
+    <p class="hint">登录会解锁 RootID，用于签名与授权。</p>
 
-    <el-form label-position="top">
-      <el-form-item v-if="rootId" label="当前账号">
-        <div class="current-account mono">{{ rootId }}</div>
-      </el-form-item>
+    <div v-if="rootId" class="login-profile">
+      <UserAvatar :root-id="rootId" :nickname="nickname" :avatar="avatar" :size="56" />
+      <div class="login-profile-name">{{ nickname || '未命名用户' }}</div>
+    </div>
+
+    <el-form label-position="top" class="auth-form">
       <el-form-item label="登录密码">
         <el-input v-model="password" type="password" show-password placeholder="输入注册密码" :disabled="busy" @keyup.enter="submit" />
       </el-form-item>
-      <el-form-item>
-        <el-button type="primary" @click="submit" :loading="busy" :disabled="busy">解锁 RootID</el-button>
-        <el-button @click="emit('switch')" :disabled="busy">切换用户</el-button>
-      </el-form-item>
     </el-form>
 
-    <el-alert v-if="message" :title="message" type="info" :closable="false" show-icon />
-  </el-card>
+    <el-button class="submit-btn" type="primary" :loading="busy" :disabled="busy" @click="submit">解锁 RootID</el-button>
+    <div class="entry-link">
+      <el-button link type="primary" :disabled="busy" @click="emit('switch')">切换用户</el-button>
+    </div>
+
+    <el-alert v-if="message" :title="message" type="info" :closable="false" show-icon class="block-gap" />
+  </section>
 </template>
 
 <script lang="ts">
 import { defineComponent, ref } from 'vue';
+import UserAvatar from '../../components/UserAvatar.vue';
 
 export default defineComponent({
   name: 'LoginPage',
+  components: {
+    UserAvatar
+  },
   props: {
     busy: {
       type: Boolean,
@@ -37,6 +40,14 @@ export default defineComponent({
     rootId: {
       type: String,
       default: null
+    },
+    nickname: {
+      type: String,
+      default: ''
+    },
+    avatar: {
+      type: String,
+      default: ''
     }
   },
   emits: ['login', 'switch'],
@@ -68,23 +79,4 @@ export default defineComponent({
 });
 </script>
 
-<style scoped>
-h2 {
-  margin: 0;
-}
-
-.hint {
-  margin: 6px 0 0;
-  color: #64748b;
-}
-
-.current-account {
-  word-break: break-all;
-  color: #334155;
-}
-
-.mono {
-  font-family: Menlo, Monaco, Consolas, 'Courier New', monospace;
-  font-size: 12px;
-}
-</style>
+<style scoped src="../../styles/pages/auth/login.css"></style>

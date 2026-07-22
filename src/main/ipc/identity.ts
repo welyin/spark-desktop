@@ -32,9 +32,9 @@ export function registerIdentityHandlers(): void {
     return await rootIdentityManager.getStatus();
   });
 
-  registerInvokeHandler('root-init', async (event, password: string) => {
+  registerInvokeHandler('root-init', async (event, password: string, nickname: string, avatar?: string | null) => {
     requireSystemDomain(event);
-    const result = await rootIdentityManager.initialize(password);
+    const result = await rootIdentityManager.initialize(password, nickname, avatar);
     // 返回前完成存储对齐（新用户切到其专属库），P2P 重连与更新检查留后台
     await ensureStorageReady();
     runPostUnlockBootstrap();
@@ -79,9 +79,9 @@ export function registerIdentityHandlers(): void {
     return { words, invalidIndexes: findInvalidMnemonicWords(words) };
   });
 
-  registerInvokeHandler('root-recover-mnemonic', async (event, mnemonic: string, newPassword: string) => {
+  registerInvokeHandler('root-recover-mnemonic', async (event, mnemonic: string, newPassword: string, nickname: string, avatar?: string | null) => {
     requireSystemDomain(event);
-    const result = await rootIdentityManager.recoverFromMnemonic(mnemonic, newPassword);
+    const result = await rootIdentityManager.recoverFromMnemonic(mnemonic, newPassword, nickname, avatar);
     await ensureStorageReady();
     runPostUnlockBootstrap();
     return result;
@@ -93,6 +93,11 @@ export function registerIdentityHandlers(): void {
     await ensureStorageReady();
     runPostUnlockBootstrap();
     return result;
+  });
+
+  registerInvokeHandler('root-update-profile', async (event, profile: { nickname?: string | null; avatar?: string | null }) => {
+    requireSystemDomain(event);
+    return rootIdentityManager.updateProfile(profile ?? {});
   });
 
   registerInvokeHandler('root-lock', (event) => {

@@ -2,16 +2,15 @@
   <section class="root-gate">
     <App v-if="isPluginWindow || showApp" />
 
-    <el-card v-else class="gate-card" shadow="never" v-loading="authBusy" element-loading-text="正在登录...">
-      <template #header>
-        <div>
-          <h1>账号入口</h1>
-          <p class="desc">登录前不展示主界面，请先完成 RootID 注册 / 登录。</p>
-        </div>
-      </template>
+    <div v-else class="gate-wrap" v-loading="authBusy" element-loading-text="正在登录...">
+      <header class="brand">
+        <span class="brand-logo">S</span>
+        <h1 class="brand-name">Spark</h1>
+        <p class="brand-slogan">去中心化的组织协作网络</p>
+      </header>
 
-      <div class="auth-wrap">
-        <p v-if="!statusLoaded" class="desc">正在读取账号状态…</p>
+      <div class="gate-panel">
+        <p v-if="!statusLoaded" class="desc gate-loading">正在读取账号状态…</p>
 
         <template v-else-if="!rootStatus.initialized">
           <RegisterPage v-if="authMode !== 'recover'" @registered="handleRegistered" @recover="authMode = 'recover'" />
@@ -23,6 +22,8 @@
             v-if="authMode === 'login'"
             :busy="authBusy"
             :root-id="rootStatus.rootId"
+            :nickname="rootStatus.nickname ?? ''"
+            :avatar="rootStatus.avatar ?? ''"
             @login="handleLogin"
             @switch="authMode = 'switch'"
           />
@@ -40,10 +41,10 @@
           <el-button type="primary" @click="showApp = true">进入主界面</el-button>
           <el-button type="danger" plain @click="handleLogout">退出登录</el-button>
         </div>
-      </div>
 
-      <el-alert v-if="message" :title="message" type="info" :closable="false" show-icon />
-    </el-card>
+        <el-alert v-if="message" :title="message" type="info" :closable="false" show-icon class="gate-message" />
+      </div>
+    </div>
   </section>
 </template>
 
@@ -60,6 +61,8 @@ type RootStatus = {
   initialized: boolean;
   unlocked: boolean;
   rootId: string | null;
+  nickname: string | null;
+  avatar: string | null;
 };
 
 type AuthMode = 'login' | 'switch' | 'register' | 'recover';
@@ -77,7 +80,7 @@ export default defineComponent({
     const search = new URLSearchParams(window.location.search);
     const isPluginWindow = ref(Boolean(search.get('pluginDomain')));
 
-    const rootStatus = ref<RootStatus>({ initialized: false, unlocked: false, rootId: null });
+    const rootStatus = ref<RootStatus>({ initialized: false, unlocked: false, rootId: null, nickname: null, avatar: null });
     const showApp = ref(false);
     const authBusy = ref(false);
     const message = ref('');
@@ -167,35 +170,4 @@ export default defineComponent({
 });
 </script>
 
-<style scoped>
-.root-gate {
-  min-height: 100vh;
-  padding: 0;
-  box-sizing: border-box;
-  background: #f5f7fa;
-}
-
-.gate-card {
-  max-width: 820px;
-  margin: 0 auto;
-}
-
-h1 {
-  margin: 0;
-}
-
-.desc {
-  margin: 8px 0 0;
-  color: #64748b;
-}
-
-.auth-wrap {
-  margin: 16px 0;
-}
-
-.ready-actions {
-  display: flex;
-  gap: 12px;
-  margin: 8px 0;
-}
-</style>
+<style scoped src="./styles/root-gate.css"></style>

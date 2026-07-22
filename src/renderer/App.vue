@@ -6,21 +6,55 @@
     </el-card>
   </section>
 
-  <el-container v-else class="shell">
-    <el-aside width="210px" class="side">
-      <el-menu :default-active="activeTab" class="menu" @select="handleMenuSelect">
-        <el-menu-item index="affairs">事务</el-menu-item>
-        <el-menu-item index="org">组织</el-menu-item>
-        <el-menu-item index="apps">应用</el-menu-item>
-        <el-menu-item index="test">测试</el-menu-item>
-        <el-menu-item v-for="tab in pluginTabs" :key="tab.id" :index="tab.id">
-          {{ tab.icon }} {{ tab.title }}
-        </el-menu-item>
-        <el-menu-item index="mine" class="mine-entry">我的</el-menu-item>
-      </el-menu>
-    </el-aside>
+  <div v-else class="shell">
+    <nav class="rail">
+      <button
+        class="rail-avatar"
+        :class="{ active: activeTab === 'mine' }"
+        title="我的"
+        @click="handleMenuSelect('mine')"
+      >
+        <UserAvatar :root-id="currentUser.rootId ?? ''" :nickname="currentUser.nickname" :avatar="currentUser.avatar" :size="38" />
+      </button>
 
-    <el-main class="main">
+      <div class="rail-main">
+        <button
+          v-for="item in navItems"
+          :key="item.id"
+          class="rail-item"
+          :class="{ active: activeTab === item.id }"
+          @click="handleMenuSelect(item.id)"
+        >
+          <el-icon :size="20"><component :is="item.icon" /></el-icon>
+          <span class="rail-label">{{ item.label }}</span>
+        </button>
+
+        <button
+          v-for="tab in pluginTabs"
+          :key="tab.id"
+          class="rail-item rail-plugin"
+          :class="{ active: activeTab === tab.id }"
+          :title="tab.title"
+          @click="handleMenuSelect(tab.id)"
+        >
+          <span class="rail-plugin-icon">{{ tab.icon }}</span>
+          <span class="rail-label">{{ tab.title }}</span>
+        </button>
+      </div>
+
+      <div class="rail-bottom">
+        <button
+          class="rail-item"
+          :class="{ active: activeTab === 'test' }"
+          @click="handleMenuSelect('test')"
+        >
+          <el-icon :size="20"><Tools /></el-icon>
+          <span class="rail-label">测试</span>
+        </button>
+      </div>
+    </nav>
+
+    <main class="main">
       <AffairsPage v-if="activeTab === 'affairs'" />
       <OrgPage v-else-if="activeTab === 'org'" @open-plugin-tab="openPluginTab" />
       <AppsPage v-else-if="activeTab === 'apps'" @open-plugin-tab="openPluginTab" />
@@ -57,13 +91,15 @@
           :title="`${activePluginTab.pluginDomain}/${activePluginTab.pluginView}`"
         />
       </el-card>
-    </el-main>
-  </el-container>
+    </main>
+  </div>
 </template>
 
 <script lang="ts">
 import { computed, defineComponent, onMounted, ref, shallowRef, type Component } from 'vue';
+import { Bell, Grid, OfficeBuilding, Tools } from '@element-plus/icons-vue';
 import { getPluginView } from './plugin-view-registry';
+import UserAvatar from './components/UserAvatar.vue';
 import AffairsPage from './pages/AffairsPage.vue';
 import OrgPage from './pages/OrgPage.vue';
 import AppsPage, { type OpenPluginTabPayload } from './pages/AppsPage.vue';
@@ -99,7 +135,12 @@ export default defineComponent({
     OrgPage,
     AppsPage,
     TestPage,
-    MinePage
+    MinePage,
+    UserAvatar,
+    Bell,
+    Grid,
+    OfficeBuilding,
+    Tools
   },
   setup() {
     const search = new URLSearchParams(window.location.search);
@@ -114,6 +155,19 @@ export default defineComponent({
     const resultMessage = ref('无需操作');
     const activeTab = ref<string>('apps');
     const pluginTabs = ref<PluginTab[]>([]);
+    // 当前登录用户资料（导航栏头像）；主窗口挂载时读取一次，切换用户会重建本组件
+    const currentUser = ref<{ rootId: string | null; nickname: string; avatar: string }>({
+      rootId: null,
+      nickname: '',
+      avatar: ''
+    });
+
+    // 深色导航栏内置入口（我的=顶部头像；测试=底部）
+    const navItems = [
+      { id: 'affairs', label: '事务', icon: Bell },
+      { id: 'org', label: '组织', icon: OfficeBuilding },
+      { id: 'apps', label: '应用', icon: Grid }
+    ];
 
     const activePluginTab = computed(() => {
       return pluginTabs.value.find((tab) => tab.id === activeTab.value) ?? null;
@@ -206,7 +260,7 @@ export default defineComponent({
     const putValue = async () => {
       try {
         await window.electronAPI.db.put('spark-key', 'spark-value');
-        resultMessage.value = 'Put 成功：spark-key -> spark-value';
+        resultMessage.value = `Put 成功：spark-key -> spark-value`;
       } catch (error) {
         resultMessage.value = `Put 失败：${error}`;
       }
@@ -256,6 +310,18 @@ export default defineComponent({
       }
 
       updateStatus();
+      window.electronAPI.rootIdentity
+        .status()
+        .then((status) => {
+          currentUser.value = {
+            rootId: status.rootId,
+            nickname: status.nickname ?? '',
+            avatar: status.avatar ?? ''
+          };
+        })
+        .catch(() => {
+          // 读取失败时保留默认自动头像
+        });
     });
 
     return {
@@ -266,6 +332,8 @@ export default defineComponent({
       pluginHostMessage,
       activeTab,
       pluginTabs,
+      navItems,
+      currentUser,
       activePluginTab,
       pluginFrameSrc,
       dbStatus,
@@ -284,123 +352,3 @@ export default defineComponent({
   }
 });
 </script>
-
-<style>
-body {
-  margin: 0;
-  background: #f5f7fa;
-}
-
-.shell {
-  min-height: 100vh;
-  display: block;
-}
-
-.side {
-  position: fixed;
-  top: 0;
-  left: 0;
-  bottom: 0;
-  z-index: 20;
-  border-right: 1px solid var(--el-border-color);
-  background: #fff;
-  overflow-y: auto;
-}
-
-.menu {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-.mine-entry {
-  margin-top: auto;
-}
-
-.main {
-  margin-left: 210px;
-  min-height: 100vh;
-  box-sizing: border-box;
-  padding: 0;
-}
-
-.el-main {
-  padding: 0 !important;
-}
-
-.plugin-host-wrap {
-  padding: 0;
-}
-
-.plugin-tab-header h1 {
-  margin: 0;
-}
-
-.plugin-tab-header p {
-  margin: 8px 0 0;
-  color: #64748b;
-}
-
-.plugin-tab-card {
-  height: calc(100vh - 40px);
-  display: flex;
-  flex-direction: column;
-}
-
-.plugin-tab-card .el-card__header {
-  flex-shrink: 0;
-}
-
-.plugin-tab-card .el-card__body {
-  flex: 1;
-  padding: 0;
-  min-height: 0;
-}
-
-.plugin-tab-header-bar {
-  display: grid;
-  grid-template-columns: 120px 1fr 120px;
-  align-items: center;
-}
-
-.plugin-tab-header-left {
-  display: flex;
-  justify-content: flex-start;
-}
-
-.plugin-tab-header-center {
-  text-align: center;
-}
-
-.plugin-tab-header-center h1 {
-  margin: 0;
-}
-
-.plugin-tab-header-center p {
-  margin: 8px 0 0;
-  color: #64748b;
-}
-
-.plugin-tab-header-right {
-  min-height: 1px;
-}
-
-.plugin-frame {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  border-radius: 10px;
-  background: #fff;
-  display: block;
-}
-
-@media (max-width: 900px) {
-  .side {
-    width: 170px !important;
-  }
-
-  .main {
-    margin-left: 170px;
-  }
-}
-</style>

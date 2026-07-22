@@ -1,9 +1,14 @@
 <template>
   <section class="card-page">
-    <h1>测试</h1>
-    <p>这里是测试页面。</p>
+    <header class="page-header">
+      <div class="page-header-main">
+        <p class="eyebrow">开发调试</p>
+        <h1>测试</h1>
+        <p class="lede">数据库、节点与更新链路的调试面板。</p>
+      </div>
+    </header>
 
-    <el-card class="nested">
+    <el-card>
       <template #header>
         <h2>LevelDB 测试面板</h2>
       </template>
@@ -24,7 +29,7 @@
       </el-descriptions>
     </el-card>
 
-    <el-card class="nested node-panel">
+    <el-card class="node-panel">
       <div class="panel-title">
         <div>
           <h2>节点面板</h2>
@@ -63,7 +68,7 @@
       </div>
     </el-card>
 
-    <el-card class="nested updater-panel">
+    <el-card class="updater-panel">
       <div class="panel-title">
         <div>
           <h2>更新调试面板</h2>
@@ -103,7 +108,7 @@
         </el-button>
       </div>
 
-      <el-card shadow="never" class="nested">
+      <el-card shadow="never" class="inner-card">
         <template #header>
           <h3>对端版本观测</h3>
         </template>
@@ -390,92 +395,4 @@ export default defineComponent({
 });
 </script>
 
-<style scoped>
-.card-page {
-  padding: 16px;
-}
-
-.nested {
-  margin-top: 16px;
-}
-
-.row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.panel-title {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: center;
-  margin-bottom: 16px;
-}
-
-.panel-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.subtitle,
-.muted,
-.address-text,
-.error-text,
-.empty-state {
-  color: #475569;
-}
-
-.node-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.node-card {
-  width: 100%;
-  box-sizing: border-box;
-}
-
-.node-card-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  min-width: 0;
-  align-items: center;
-}
-
-.node-card-head strong {
-  flex: 1;
-  min-width: 0;
-  word-break: break-all;
-}
-
-.node-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 10px 0;
-}
-
-.node-meta span {
-  font-size: 12px;
-}
-
-.status {
-  margin-top: 8px;
-  color: #333;
-}
-
-.message {
-  margin-bottom: 12px;
-}
-
-.address-text,
-.error-text {
-  margin: 0;
-  word-break: break-all;
-}
-</style>
+<style scoped src="../styles/pages/test.css"></style>

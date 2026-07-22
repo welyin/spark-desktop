@@ -1,24 +1,25 @@
 <template>
-  <el-card>
-    <template #header>
-      <div>
-        <h2>用户注册</h2>
-        <p class="hint">首次注册将创建 RootID（仅本地存储）。</p>
-      </div>
-    </template>
+  <section class="auth-panel">
+    <h2 class="auth-title">用户注册</h2>
+    <p class="hint">首次注册将创建 RootID（仅本地存储）。</p>
 
     <template v-if="step === 'password'">
-      <el-form label-position="top">
+      <el-form label-position="top" class="auth-form">
+        <el-form-item label="昵称">
+          <el-input v-model="nickname" placeholder="中英文均可，最长 24 个字符" maxlength="24" :disabled="busy" />
+        </el-form-item>
+        <el-form-item label="头像（可选）">
+          <AvatarPicker v-model="avatarDataUrl" :nickname="nickname" :disabled="busy" />
+          <p class="hint">不上传时将按账号自动生成配色头像，之后可在"我的"页随时更换。</p>
+        </el-form-item>
         <el-form-item label="登录密码">
           <el-input v-model="password" type="password" show-password placeholder="至少 8 位" :disabled="busy" />
         </el-form-item>
         <el-form-item label="确认密码">
           <el-input v-model="confirmPassword" type="password" show-password placeholder="重复输入密码" :disabled="busy" />
         </el-form-item>
-        <el-form-item>
-          <el-button type="primary" @click="submit" :loading="busy" :disabled="busy">创建 RootID</el-button>
-        </el-form-item>
       </el-form>
+      <el-button class="submit-btn" type="primary" :loading="busy" :disabled="busy" @click="submit">创建 RootID</el-button>
       <div class="entry-link">
         <el-button link type="primary" @click="emit('recover')">已有助记词或备份二维码？恢复账号</el-button>
       </div>
@@ -30,6 +31,7 @@
         type="warning"
         :closable="false"
         show-icon
+        class="auth-form"
       />
       <div class="mnemonic-grid">
         <span v-for="(word, index) in mnemonicWords" :key="index" class="mnemonic-word">
@@ -37,9 +39,10 @@
           {{ word }}
         </span>
       </div>
-      <div class="row">
-        <el-button type="primary" @click="copyMnemonic">复制助记词</el-button>
-        <el-button @click="finish" :disabled="!copied">进入应用</el-button>
+      <el-button class="submit-btn" type="primary" @click="copyMnemonic">复制助记词</el-button>
+      <div class="entry-link">
+        <el-button link type="primary" :disabled="!copied" @click="finish">已保存，进入应用</el-button>
+        <el-button link type="info" @click="finish">稍后备份，先进入应用</el-button>
       </div>
       <el-alert
         v-if="copied"
@@ -49,26 +52,29 @@
         show-icon
         class="block-gap"
       />
-      <div class="entry-link">
-        <el-button link type="info" @click="finish">稍后备份，先进入应用</el-button>
-      </div>
     </template>
 
     <el-alert v-if="message" :title="message" type="error" :closable="false" show-icon class="block-gap" />
-  </el-card>
+  </section>
 </template>
 
 <script lang="ts">
 import { computed, defineComponent, ref } from 'vue';
 import { ElMessage } from 'element-plus';
+import AvatarPicker from '../../components/AvatarPicker.vue';
 import { markIdentityBackupDone } from '../../utils/backup-state';
 import { errorMessage } from '../../utils/ipc';
 
 export default defineComponent({
   name: 'RegisterPage',
+  components: {
+    AvatarPicker
+  },
   emits: ['registered', 'recover'],
   setup(_, { emit }) {
     const step = ref<'password' | 'mnemonic'>('password');
+    const nickname = ref('');
+    const avatarDataUrl = ref('');
     const password = ref('');
     const confirmPassword = ref('');
     const busy = ref(false);
@@ -80,6 +86,10 @@ export default defineComponent({
     const mnemonicWords = computed(() => (mnemonic.value ? mnemonic.value.split(' ') : []));
 
     const submit = async () => {
+      if (!nickname.value.trim()) {
+        message.value = '请先填写昵称';
+        return;
+      }
       if (password.value.length < 8) {
         message.value = '密码至少 8 位';
         return;
@@ -92,7 +102,11 @@ export default defineComponent({
       busy.value = true;
       message.value = '';
       try {
-        const result = await window.electronAPI.rootIdentity.initialize(password.value);
+        const result = await window.electronAPI.rootIdentity.initialize(
+          password.value,
+          nickname.value.trim(),
+          avatarDataUrl.value || null
+        );
         mnemonic.value = result.mnemonic;
         rootId.value = result.rootId;
         step.value = 'mnemonic';
@@ -120,6 +134,8 @@ export default defineComponent({
 
     return {
       step,
+      nickname,
+      avatarDataUrl,
       password,
       confirmPassword,
       busy,
@@ -135,49 +151,4 @@ export default defineComponent({
 });
 </script>
 
-<style scoped>
-h2 {
-  margin: 0;
-}
-
-.hint {
-  margin: 6px 0 0;
-  color: #64748b;
-}
-
-.mnemonic-grid {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 8px;
-  margin: 14px 0;
-}
-
-.mnemonic-word {
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  padding: 6px 0;
-  text-align: center;
-  font-size: 16px;
-}
-
-.mnemonic-word em {
-  display: block;
-  font-style: normal;
-  font-size: 10px;
-  color: #94a3b8;
-}
-
-.row {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-}
-
-.entry-link {
-  margin-top: 8px;
-}
-
-.block-gap {
-  margin-top: 12px;
-}
-</style>
+<style scoped src="../../styles/pages/auth/register.css"></style>

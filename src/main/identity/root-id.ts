@@ -75,6 +75,10 @@ type StoredRootIdentity = {
   createdAt: number;
   /** v2 起记录助记词词表；v1 文件缺省为英文词表（仅派生用，不参与校验） */
   wordlist?: string;
+  /** 用户昵称（明文展示信息，非密钥材料）；旧身份文件可能缺省 */
+  nickname?: string;
+  /** 用户上传头像（dataURL，明文展示信息）；缺省时 UI 按 rootId 生成自动头像 */
+  avatar?: string;
   kdf: KdfV1 | KdfV2;
   encryption: EncryptionV1 | EncryptionV2;
 };
@@ -92,6 +96,10 @@ export type RootIdentityStatus = {
   initialized: boolean;
   unlocked: boolean;
   rootId: string | null;
+  /** 当前活跃身份昵称；未设置（旧身份）为 null */
+  nickname: string | null;
+  /** 当前活跃身份头像 dataURL；未设置为 null（UI 应回退自动头像） */
+  avatar: string | null;
 };
 
 export type RootSignature = {
@@ -297,7 +305,62 @@ export type IdentitySummary = {
   rootId: string;
   createdAt: number;
   active: boolean;
+  /** 昵称与头像（dataURL）；旧身份文件缺省为 null，UI 回退自动头像与"未命名用户" */
+  nickname: string | null;
+  avatar: string | null;
 };
+
+const NICKNAME_MAX_LEN = 24;
+const AVATAR_DATA_URL_MAX_LEN = 200_000; // 头像 dataURL 体积上限（约 150KB 图片）
+
+/** 昵称规范化：去首尾空白；required 时为空直接抛错 */
+function normalizeNickname(nickname: string | null | undefined, required: boolean): string | undefined {
+  const trimmed = (nickname ?? '').trim();
+  if (!trimmed) {
+    if (required) {
+      throw new Error('昵称不能为空');
+    }
+    return undefined;
+  }
+  if ([...trimmed].length > NICKNAME_MAX_LEN) {
+    throw new Error(`昵称最长 ${NICKNAME_MAX_LEN} 个字符`);
+  }
+  return trimmed;
+}
+
+/** 头像规范化：必须为 data:image/ 开头且体积受限；空值返回 undefined（回退自动头像） */
+function normalizeAvatar(avatar: string | null | undefined): string | undefined {
+  if (!avatar) {
+    return undefined;
+  }
+  if (!avatar.startsWith('data:image/')) {
+    throw new Error('头像必须是图片');
+  }
+  if (avatar.length > AVATAR_DATA_URL_MAX_LEN) {
+    throw new Error('头像图片过大，请选择更小的图片');
+  }
+  return avatar;
+}
+
+/** 备份恢复等外部来源的身份资料清洗：昵称/头像是展示信息，非法时静默剔除而非阻断恢复 */
+function sanitizeExternalProfile(payload: StoredRootIdentity): void {
+  try {
+    payload.nickname = normalizeNickname(payload.nickname, false);
+  } catch {
+    delete payload.nickname;
+  }
+  try {
+    payload.avatar = normalizeAvatar(payload.avatar);
+  } catch {
+    delete payload.avatar;
+  }
+  if (payload.nickname === undefined) {
+    delete payload.nickname;
+  }
+  if (payload.avatar === undefined) {
+    delete payload.avatar;
+  }
+}
 
 export class RootIdentityManager {
   private readonly baseDir: string;
@@ -425,7 +488,9 @@ export class RootIdentityManager {
         result.push({
           rootId: payload.rootId,
           createdAt: typeof payload.createdAt === 'number' ? payload.createdAt : 0,
-          active: payload.rootId === activeRootId
+          active: payload.rootId === activeRootId,
+          nickname: typeof payload.nickname === 'string' && payload.nickname.trim() ? payload.nickname : null,
+          avatar: typeof payload.avatar === 'string' && payload.avatar.startsWith('data:image/') ? payload.avatar : null
         });
       } catch {
         // 跳过损坏的身份文件
@@ -445,17 +510,23 @@ export class RootIdentityManager {
 
   async getStatus(): Promise<RootIdentityStatus> {
     const identities = await this.listIdentities();
+    const rootId = this.unlockedIdentity?.rootId ?? (await this.readActiveRootId());
+    const current = rootId ? identities.find((item) => item.rootId === rootId) : undefined;
     return {
       initialized: identities.length > 0,
       unlocked: !!this.unlockedIdentity,
-      rootId: this.unlockedIdentity?.rootId ?? (await this.readActiveRootId())
+      rootId,
+      nickname: current?.nickname ?? null,
+      avatar: current?.avatar ?? null
     };
   }
 
-  async initialize(password: string): Promise<{ rootId: string; mnemonic: string }> {
+  async initialize(password: string, nickname: string, avatar?: string | null): Promise<{ rootId: string; mnemonic: string }> {
     if (!password || password.length < 8) {
       throw new Error('Password must be at least 8 characters');
     }
+    const normalizedNickname = normalizeNickname(nickname, true) as string;
+    const normalizedAvatar = normalizeAvatar(avatar);
 
     const mnemonic = bip39.generateMnemonic(BIP39_ENTROPY_BITS, undefined, BIP39_WORDLIST);
     const unlocked = createKeypairFromMnemonic(mnemonic, DERIVATION_PATH);
@@ -470,6 +541,8 @@ export class RootIdentityManager {
       publicKey: unlocked.publicKey.toString('base64'),
       createdAt: Date.now(),
       wordlist: WORDLIST_NAME,
+      nickname: normalizedNickname,
+      ...(normalizedAvatar ? { avatar: normalizedAvatar } : {}),
       ...encrypted
     };
 
@@ -544,10 +617,12 @@ export class RootIdentityManager {
    * 依次尝试中文简体与英文词表（含 BIP39 checksum）——英文用于兼容 v1 时代
    * 生成的助记词；通过校验的词表名记入身份文件。
    */
-  async recoverFromMnemonic(mnemonicInput: string, newPassword: string): Promise<{ rootId: string }> {
+  async recoverFromMnemonic(mnemonicInput: string, newPassword: string, nickname: string, avatar?: string | null): Promise<{ rootId: string }> {
     if (!newPassword || newPassword.length < 8) {
       throw new Error('Password must be at least 8 characters');
     }
+    const normalizedNickname = normalizeNickname(nickname, true) as string;
+    const normalizedAvatar = normalizeAvatar(avatar);
     await this.migrateLegacyIfNeeded();
 
     const words = splitMnemonicInput(mnemonicInput);
@@ -572,6 +647,8 @@ export class RootIdentityManager {
       publicKey: unlocked.publicKey.toString('base64'),
       createdAt: Date.now(),
       wordlist: wordlistName,
+      nickname: normalizedNickname,
+      ...(normalizedAvatar ? { avatar: normalizedAvatar } : {}),
       ...encrypted
     };
 
@@ -613,10 +690,36 @@ export class RootIdentityManager {
       throw new Error('该账号已在本设备上，请直接登录');
     }
 
+    // 备份载荷即身份记录本身，昵称/头像随备份自然携带（旧备份可能缺省，清洗后落库）
+    sanitizeExternalProfile(payload);
     await this.writeStoredIdentity(payload);
     await this.writeActiveRootId(unlocked.rootId);
     this.unlockedIdentity = unlocked;
     return { rootId: unlocked.rootId };
+  }
+
+  /** 更新当前已解锁身份的资料（昵称/头像）；avatar 传 null 表示恢复自动头像 */
+  async updateProfile(profile: { nickname?: string | null; avatar?: string | null }): Promise<{ nickname: string | null; avatar: string | null }> {
+    const unlocked = this.requireUnlocked();
+    const payload = await this.readIdentityFile(unlocked.rootId);
+    if (!payload) {
+      throw new Error('Root identity is not initialized');
+    }
+
+    if (profile.nickname !== undefined && profile.nickname !== null) {
+      payload.nickname = normalizeNickname(profile.nickname, true);
+    }
+    if (profile.avatar !== undefined) {
+      const normalized = normalizeAvatar(profile.avatar);
+      if (normalized) {
+        payload.avatar = normalized;
+      } else {
+        delete payload.avatar;
+      }
+    }
+
+    await this.writeStoredIdentity(payload);
+    return { nickname: payload.nickname ?? null, avatar: payload.avatar ?? null };
   }
 
   sign(payload: string | Buffer): RootSignature {

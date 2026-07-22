@@ -19,7 +19,7 @@ describe('RootIdentityManager', () => {
     const tmp = await makeTmp();
     const manager = new RootIdentityManager(tmp);
 
-    const init = await manager.initialize('strong-password-123');
+    const init = await manager.initialize('strong-password-123', '测试用户');
     expect(init.rootId.length).toBeGreaterThan(0);
     expect(init.mnemonic.split(' ').length).toBe(24);
 
@@ -40,7 +40,7 @@ describe('RootIdentityManager', () => {
     const tmp = await makeTmp();
     const manager = new RootIdentityManager(tmp);
 
-    await manager.initialize('correct-password');
+    await manager.initialize('correct-password', '测试用户');
     manager.lock();
 
     await expect(manager.unlock('wrong-password')).rejects.toThrow(/invalid password/i);
@@ -51,7 +51,7 @@ describe('RootIdentityManager', () => {
     const tmp = await makeTmp();
     const manager = new RootIdentityManager(tmp);
 
-    await manager.initialize('derivation-password');
+    await manager.initialize('derivation-password', '测试用户');
     const d1 = manager.deriveDomainIdentity('plugin:demo');
     const d2 = manager.deriveDomainIdentity('plugin:demo');
     const d3 = manager.deriveDomainIdentity('plugin:another');
@@ -67,7 +67,7 @@ describe('RootIdentityManager', () => {
     const tmp = await makeTmp();
     const manager = new RootIdentityManager(tmp);
 
-    await manager.initialize('domain-sign-password');
+    await manager.initialize('domain-sign-password', '测试用户');
 
     const sig = manager.signWithDomainIdentity('plugin:demo', 'hello-vote');
     expect(sig.domain).toBe('plugin:demo');
@@ -101,7 +101,7 @@ describe('RootIdentityManager', () => {
     const tmp = await makeTmp();
     const manager = new RootIdentityManager(tmp);
 
-    await manager.initialize('verify-edge-password');
+    await manager.initialize('verify-edge-password', '测试用户');
     const sig = manager.signWithDomainIdentity('plugin:demo', 'payload');
 
     expect(verifyEd25519Signature('payload', 'not-base64!!!', sig.publicKey)).toBe(false);
@@ -117,7 +117,7 @@ describe('RootIdentityManager v2 格式与中文助记词', () => {
     const tmp = await makeTmp();
     const manager = new RootIdentityManager(tmp);
 
-    const init = await manager.initialize('strong-password-123');
+    const init = await manager.initialize('strong-password-123', '测试用户');
 
     // 24 个汉字且均在中文简体词表内
     const words = init.mnemonic.split(' ');
@@ -144,7 +144,7 @@ describe('RootIdentityManager v2 格式与中文助记词', () => {
     const tmp = await makeTmp();
     const manager = new RootIdentityManager(tmp);
 
-    const init = await manager.initialize('reveal-password-1');
+    const init = await manager.initialize('reveal-password-1', '测试用户');
     manager.lock();
 
     const revealed = await manager.revealMnemonic('reveal-password-1');
@@ -160,7 +160,7 @@ describe('RootIdentityManager v2 格式与中文助记词', () => {
 
     // 用 v2 管理器产出秘密与 rootId，再以旧版单文件 v1 加密格式手工落盘
     const managerA = new RootIdentityManager(tmpA);
-    const init = await managerA.initialize('legacy-password-1');
+    const init = await managerA.initialize('legacy-password-1', '测试用户');
     const secret = { mnemonic: init.mnemonic, derivationPath: `m/44'/607'/0'/0'/0'` };
     const v2Stored = JSON.parse(await readFile(identityFile(tmpA, init.rootId), 'utf8'));
 
@@ -188,7 +188,8 @@ describe('RootIdentityManager v2 格式与中文助记词', () => {
     await access(identityFile(tmpB, init.rootId)); // 迁移后的文件存在
     await expect(access(path.join(tmpB, 'root-identity.json'))).rejects.toThrow(); // 旧文件已移除
     const identities = await managerB.listIdentities();
-    expect(identities).toEqual([{ rootId: init.rootId, createdAt: v2Stored.createdAt, active: true }]);
+    // v1 旧文件无昵称/头像，回退 null（UI 显示"未命名用户"+自动头像）
+    expect(identities).toEqual([{ rootId: init.rootId, createdAt: v2Stored.createdAt, active: true, nickname: null, avatar: null }]);
 
     await rm(tmpA, { recursive: true, force: true });
     await rm(tmpB, { recursive: true, force: true });
@@ -200,8 +201,8 @@ describe('RootIdentityManager 多用户', () => {
     const tmp = await makeTmp();
     const manager = new RootIdentityManager(tmp);
 
-    const userA = await manager.initialize('password-a-123');
-    const userB = await manager.initialize('password-b-123');
+    const userA = await manager.initialize('password-a-123', '用户甲');
+    const userB = await manager.initialize('password-b-123', '用户乙');
 
     // 注册后活跃身份为最后注册者
     let identities = await manager.listIdentities();
@@ -236,10 +237,10 @@ describe('RootIdentityManager 多用户', () => {
     const tmp = await makeTmp();
     const manager = new RootIdentityManager(tmp);
 
-    const init = await manager.initialize('origin-password-1');
+    const init = await manager.initialize('origin-password-1', '测试用户');
     manager.lock();
 
-    await expect(manager.recoverFromMnemonic(init.mnemonic, 'new-password-123')).rejects.toThrow(/已在本设备/);
+    await expect(manager.recoverFromMnemonic(init.mnemonic, 'new-password-123', '测试用户')).rejects.toThrow(/已在本设备/);
     const { payload } = await manager.getEncryptedBackupPayload();
     await expect(manager.recoverFromBackup(payload, 'origin-password-1')).rejects.toThrow(/已在本设备/);
 
@@ -254,17 +255,17 @@ describe('RootIdentityManager 备份与恢复', () => {
     const tmpC = await makeTmp();
 
     const managerA = new RootIdentityManager(tmpA);
-    const init = await managerA.initialize('origin-password-1');
+    const init = await managerA.initialize('origin-password-1', '测试用户');
 
     // 空格分隔输入
     const managerB = new RootIdentityManager(tmpB);
-    const recoveredB = await managerB.recoverFromMnemonic(init.mnemonic, 'new-password-123');
+    const recoveredB = await managerB.recoverFromMnemonic(init.mnemonic, 'new-password-123', '测试用户');
     expect(recoveredB.rootId).toBe(init.rootId);
     expect(() => managerB.sign('x')).not.toThrow();
 
     // 连续书写输入（无空格）
     const managerC = new RootIdentityManager(tmpC);
-    const recoveredC = await managerC.recoverFromMnemonic(init.mnemonic.split(' ').join(''), 'new-password-123');
+    const recoveredC = await managerC.recoverFromMnemonic(init.mnemonic.split(' ').join(''), 'new-password-123', '测试用户');
     expect(recoveredC.rootId).toBe(init.rootId);
 
     // 恢复后可再次导出相同助记词
@@ -283,12 +284,12 @@ describe('RootIdentityManager 备份与恢复', () => {
     // 错字（词表外）
     const badWords = bip39.generateMnemonic(256, undefined, bip39.wordlists.chinese_simplified).split(' ');
     badWords[0] = '龘';
-    await expect(manager.recoverFromMnemonic(badWords.join(' '), 'new-password-123')).rejects.toThrow(/校验失败/);
+    await expect(manager.recoverFromMnemonic(badWords.join(' '), 'new-password-123', '测试用户')).rejects.toThrow(/校验失败/);
     // 字数不足
-    await expect(manager.recoverFromMnemonic('的一是在', 'new-password-123')).rejects.toThrow(/校验失败/);
+    await expect(manager.recoverFromMnemonic('的一是在', 'new-password-123', '测试用户')).rejects.toThrow(/校验失败/);
     // 短密码
     const valid = bip39.generateMnemonic(256, undefined, bip39.wordlists.chinese_simplified);
-    await expect(manager.recoverFromMnemonic(valid, 'short')).rejects.toThrow(/at least 8/i);
+    await expect(manager.recoverFromMnemonic(valid, 'short', '测试用户')).rejects.toThrow(/at least 8/i);
 
     await rm(tmp, { recursive: true, force: true });
   });
@@ -301,11 +302,11 @@ describe('RootIdentityManager 备份与恢复', () => {
     const englishMnemonic = bip39.generateMnemonic(256);
 
     const managerA = new RootIdentityManager(tmpA);
-    const recoveredA = await managerA.recoverFromMnemonic(englishMnemonic, 'new-password-123');
+    const recoveredA = await managerA.recoverFromMnemonic(englishMnemonic, 'new-password-123', '测试用户');
 
     // 同一英文助记词在另一设备恢复出同一 rootId
     const managerB = new RootIdentityManager(tmpB);
-    const recoveredB = await managerB.recoverFromMnemonic(englishMnemonic, 'new-password-123');
+    const recoveredB = await managerB.recoverFromMnemonic(englishMnemonic, 'new-password-123', '测试用户');
     expect(recoveredB.rootId).toBe(recoveredA.rootId);
 
     // 词表名记入身份文件；可正常解锁与查看助记词
@@ -327,12 +328,12 @@ describe('RootIdentityManager 备份与恢复', () => {
     // 英文 24 词中混入一个错词
     const words = bip39.generateMnemonic(256).split(' ');
     words[3] = 'notaword';
-    await expect(manager.recoverFromMnemonic(words.join(' '), 'new-password-123')).rejects.toThrow(/校验失败/);
+    await expect(manager.recoverFromMnemonic(words.join(' '), 'new-password-123', '测试用户')).rejects.toThrow(/校验失败/);
 
     // 中英混合无法通过任一词表校验
     const chinese = bip39.generateMnemonic(256, undefined, bip39.wordlists.chinese_simplified).split(' ');
     const mixed = [...chinese.slice(0, 12), ...bip39.generateMnemonic(256).split(' ').slice(0, 12)];
-    await expect(manager.recoverFromMnemonic(mixed.join(' '), 'new-password-123')).rejects.toThrow(/校验失败/);
+    await expect(manager.recoverFromMnemonic(mixed.join(' '), 'new-password-123', '测试用户')).rejects.toThrow(/校验失败/);
 
     await rm(tmp, { recursive: true, force: true });
   });
@@ -342,7 +343,7 @@ describe('RootIdentityManager 备份与恢复', () => {
     const tmpB = await makeTmp();
 
     const managerA = new RootIdentityManager(tmpA);
-    const init = await managerA.initialize('backup-password-1');
+    const init = await managerA.initialize('backup-password-1', '测试用户');
     const { payload } = await managerA.getEncryptedBackupPayload();
 
     const managerB = new RootIdentityManager(tmpB);
@@ -358,7 +359,7 @@ describe('RootIdentityManager 备份与恢复', () => {
     const tmpA = await makeTmp();
 
     const managerA = new RootIdentityManager(tmpA);
-    await managerA.initialize('backup-password-1');
+    await managerA.initialize('backup-password-1', '测试用户');
     const { payload } = await managerA.getEncryptedBackupPayload();
 
     const mkManager = async () => {
@@ -385,6 +386,90 @@ describe('RootIdentityManager 备份与恢复', () => {
     await rm(invalidCase.tmp, { recursive: true, force: true });
 
     await rm(tmpA, { recursive: true, force: true });
+  });
+});
+
+describe('RootIdentityManager 资料（昵称与头像）', () => {
+  const AVATAR = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  it('stores nickname and avatar on initialize and exposes them via status and listIdentities', async () => {
+    const tmp = await makeTmp();
+    const manager = new RootIdentityManager(tmp);
+
+    const init = await manager.initialize('profile-password-1', '张三', AVATAR);
+    const status = await manager.getStatus();
+    expect(status.nickname).toBe('张三');
+    expect(status.avatar).toBe(AVATAR);
+
+    const identities = await manager.listIdentities();
+    expect(identities[0]).toMatchObject({ rootId: init.rootId, nickname: '张三', avatar: AVATAR });
+
+    // 落盘文件同样携带（明文展示信息，不参与加密）
+    const stored = JSON.parse(await readFile(identityFile(tmp, init.rootId), 'utf8'));
+    expect(stored.nickname).toBe('张三');
+    expect(stored.avatar).toBe(AVATAR);
+
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  it('validates nickname and avatar on initialize', async () => {
+    const tmp = await makeTmp();
+    const manager = new RootIdentityManager(tmp);
+
+    await expect(manager.initialize('profile-password-1', '')).rejects.toThrow(/昵称不能为空/);
+    await expect(manager.initialize('profile-password-1', '   ')).rejects.toThrow(/昵称不能为空/);
+    await expect(manager.initialize('profile-password-1', '超'.repeat(25))).rejects.toThrow(/最长/);
+    await expect(manager.initialize('profile-password-1', '张三', 'not-a-data-url')).rejects.toThrow(/头像必须是图片/);
+
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  it('updates profile via updateProfile and clears avatar with null', async () => {
+    const tmp = await makeTmp();
+    const manager = new RootIdentityManager(tmp);
+
+    await manager.initialize('profile-password-1', '张三', AVATAR);
+    const updated = await manager.updateProfile({ nickname: 'Alice' });
+    expect(updated.nickname).toBe('Alice');
+    expect(updated.avatar).toBe(AVATAR); // 未传 avatar 保持不变
+
+    const cleared = await manager.updateProfile({ avatar: null });
+    expect(cleared.avatar).toBeNull();
+    expect((await manager.getStatus()).avatar).toBeNull();
+    expect((await manager.getStatus()).nickname).toBe('Alice');
+
+    // 锁定后禁止修改
+    manager.lock();
+    await expect(manager.updateProfile({ nickname: 'x' })).rejects.toThrow(/locked/i);
+
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  it('requires nickname on mnemonic recovery and carries profile via backup recovery', async () => {
+    const tmpA = await makeTmp();
+    const tmpB = await makeTmp();
+    const tmpC = await makeTmp();
+
+    const managerA = new RootIdentityManager(tmpA);
+    const init = await managerA.initialize('profile-password-1', '张三', AVATAR);
+
+    // 助记词恢复必须给昵称（新设备上没有该身份的任何资料）
+    const managerB = new RootIdentityManager(tmpB);
+    await expect(managerB.recoverFromMnemonic(init.mnemonic, 'new-password-123', '')).rejects.toThrow(/昵称不能为空/);
+    await managerB.recoverFromMnemonic(init.mnemonic, 'new-password-123', '李四');
+    expect((await managerB.getStatus()).nickname).toBe('李四');
+    expect((await managerB.getStatus()).avatar).toBeNull(); // 未上传则回退自动头像
+
+    // 备份二维码载荷即身份记录，昵称/头像随备份携带
+    const { payload } = await managerA.getEncryptedBackupPayload();
+    const managerC = new RootIdentityManager(tmpC);
+    await managerC.recoverFromBackup(payload, 'profile-password-1');
+    expect((await managerC.getStatus()).nickname).toBe('张三');
+    expect((await managerC.getStatus()).avatar).toBe(AVATAR);
+
+    await rm(tmpA, { recursive: true, force: true });
+    await rm(tmpB, { recursive: true, force: true });
+    await rm(tmpC, { recursive: true, force: true });
   });
 });
 

@@ -24,6 +24,8 @@
           <LoginPage
             v-if="authMode === 'login'"
             :root-id="rootStatus.rootId"
+            :nickname="rootStatus.nickname ?? ''"
+            :avatar="rootStatus.avatar ?? ''"
             @login="handleLogin"
             @switch="authMode = 'switch'"
           />
@@ -66,6 +68,8 @@ type RootStatus = {
   initialized: boolean;
   unlocked: boolean;
   rootId: string | null;
+  nickname: string | null;
+  avatar: string | null;
 };
 
 type AuthMode = 'login' | 'switch' | 'register' | 'recover';
@@ -80,7 +84,7 @@ export default defineComponent({
   },
   emits: ['open-root-page', 'update-auth-state'],
   setup(_, { emit }) {
-    const rootStatus = ref<RootStatus>({ initialized: false, unlocked: false, rootId: null });
+    const rootStatus = ref<RootStatus>({ initialized: false, unlocked: false, rootId: null, nickname: null, avatar: null });
     const message = ref('');
     const authMode = ref<AuthMode>('register');
     const statusLoaded = ref(false);
@@ -167,44 +171,4 @@ export default defineComponent({
 });
 </script>
 
-<style scoped>
-.auth-center {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-h1,
-h2 {
-  margin: 0;
-}
-
-.lede {
-  margin: 0;
-  color: #64748b;
-}
-
-.status-grid {
-  margin-top: 10px;
-}
-
-.section-wrap {
-  margin-top: 14px;
-}
-
-.inner-card {
-  border-radius: 10px;
-}
-
-.row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 10px;
-  align-items: center;
-}
-
-.block-gap {
-  margin-top: 12px;
-}
-</style>
+<style scoped src="../../styles/pages/auth/root-auth-center.css"></style>

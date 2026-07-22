@@ -1,13 +1,9 @@
 <template>
-  <el-card>
-    <template #header>
-      <div>
-        <h2>恢复账号</h2>
-        <p class="hint">通过助记词或备份二维码恢复 RootID。</p>
-      </div>
-    </template>
+  <section class="auth-panel">
+    <h2 class="auth-title">恢复账号</h2>
+    <p class="hint">通过助记词或备份二维码恢复 RootID。</p>
 
-    <el-tabs v-model="activeTab">
+    <el-tabs v-model="activeTab" class="auth-tabs">
       <el-tab-pane label="助记词恢复" name="mnemonic">
         <el-form label-position="top">
           <el-form-item label="助记词（24 个汉字或英文单词，汉字可空格分隔或连续书写）">
@@ -36,17 +32,21 @@
             已识别 {{ checkWords.length }} / 24 个词<template v-if="invalidIndexes.length > 0">，红色为词表外错字</template>
           </p>
         </template>
-        <el-form label-position="top">
+        <el-form label-position="top" class="auth-form">
+          <el-form-item label="昵称">
+            <el-input v-model="nickname" placeholder="中英文均可，最长 24 个字符" maxlength="24" :disabled="busy" />
+          </el-form-item>
+          <el-form-item label="头像（可选）">
+            <AvatarPicker v-model="avatarDataUrl" :nickname="nickname" :disabled="busy" />
+          </el-form-item>
           <el-form-item label="新登录密码">
             <el-input v-model="newPassword" type="password" show-password placeholder="至少 8 位" :disabled="busy" />
           </el-form-item>
           <el-form-item label="确认新密码">
             <el-input v-model="confirmPassword" type="password" show-password placeholder="重复输入新密码" :disabled="busy" />
           </el-form-item>
-          <el-form-item>
-            <el-button type="primary" :loading="busy" :disabled="!mnemonicReady" @click="submitMnemonic">恢复账号</el-button>
-          </el-form-item>
         </el-form>
+        <el-button class="submit-btn" type="primary" :loading="busy" :disabled="!mnemonicReady" @click="submitMnemonic">恢复账号</el-button>
         <p class="hint">助记词是账号最高权限：恢复无需旧密码，恢复后原设备密码不再适用。</p>
       </el-tab-pane>
 
@@ -57,14 +57,21 @@
           <span v-if="qrPayload" class="ok-text">已识别备份二维码</span>
         </div>
         <input ref="fileInput" type="file" accept="image/*" class="hidden-input" @change="onFileChange" />
-        <el-form v-if="qrPayload" label-position="top" class="block-gap">
+        <el-form v-if="qrPayload" label-position="top" class="auth-form">
           <el-form-item label="原登录密码">
             <el-input v-model="qrPassword" type="password" show-password placeholder="输入备份时的登录密码" :disabled="busy" />
           </el-form-item>
-          <el-form-item>
-            <el-button type="primary" :loading="busy" :disabled="!qrPassword" @click="submitQr">恢复账号</el-button>
-          </el-form-item>
         </el-form>
+        <el-button
+          v-if="qrPayload"
+          class="submit-btn"
+          type="primary"
+          :loading="busy"
+          :disabled="!qrPassword"
+          @click="submitQr"
+        >
+          恢复账号
+        </el-button>
       </el-tab-pane>
     </el-tabs>
 
@@ -73,16 +80,20 @@
     </div>
 
     <el-alert v-if="message" :title="message" type="error" :closable="false" show-icon class="block-gap" />
-  </el-card>
+  </section>
 </template>
 
 <script lang="ts">
 import { computed, defineComponent, ref, watch } from 'vue';
 import jsQR from 'jsqr';
+import AvatarPicker from '../../components/AvatarPicker.vue';
 import { errorMessage } from '../../utils/ipc';
 
 export default defineComponent({
   name: 'RecoverPage',
+  components: {
+    AvatarPicker
+  },
   props: {
     /** 返回按钮文案（由父级按返回目标传入，如"返回注册"/"返回用户列表"） */
     backLabel: {
@@ -100,6 +111,8 @@ export default defineComponent({
     const mnemonicInput = ref('');
     const checkWords = ref<string[]>([]);
     const invalidIndexes = ref<number[]>([]);
+    const nickname = ref('');
+    const avatarDataUrl = ref('');
     const newPassword = ref('');
     const confirmPassword = ref('');
 
@@ -124,6 +137,7 @@ export default defineComponent({
       () =>
         checkWords.value.length === 24 &&
         invalidIndexes.value.length === 0 &&
+        nickname.value.trim().length > 0 &&
         newPassword.value.length >= 8 &&
         newPassword.value === confirmPassword.value
     );
@@ -132,7 +146,12 @@ export default defineComponent({
       busy.value = true;
       message.value = '';
       try {
-        const result = await window.electronAPI.rootIdentity.recoverMnemonic(mnemonicInput.value, newPassword.value);
+        const result = await window.electronAPI.rootIdentity.recoverMnemonic(
+          mnemonicInput.value,
+          newPassword.value,
+          nickname.value.trim(),
+          avatarDataUrl.value || null
+        );
         emit('recovered', result.rootId);
       } catch (error) {
         message.value = `恢复失败：${errorMessage(error)}`;
@@ -202,6 +221,8 @@ export default defineComponent({
       mnemonicInput,
       checkWords,
       invalidIndexes,
+      nickname,
+      avatarDataUrl,
       newPassword,
       confirmPassword,
       mnemonicReady,
@@ -218,63 +239,4 @@ export default defineComponent({
 });
 </script>
 
-<style scoped>
-h2 {
-  margin: 0;
-}
-
-.hint {
-  margin: 6px 0 0;
-  color: #64748b;
-}
-
-.mnemonic-grid {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 8px;
-  margin: 10px 0;
-}
-
-.mnemonic-word {
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  padding: 6px 0;
-  text-align: center;
-  font-size: 16px;
-}
-
-.mnemonic-word em {
-  display: block;
-  font-style: normal;
-  font-size: 10px;
-  color: #94a3b8;
-}
-
-.mnemonic-word.invalid {
-  border-color: #f56c6c;
-  color: #f56c6c;
-  background: #fef0f0;
-}
-
-.row {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-}
-
-.ok-text {
-  color: #67c23a;
-}
-
-.hidden-input {
-  display: none;
-}
-
-.entry-link {
-  margin-top: 8px;
-}
-
-.block-gap {
-  margin-top: 12px;
-}
-</style>
+<style scoped src="../../styles/pages/auth/recover.css"></style>

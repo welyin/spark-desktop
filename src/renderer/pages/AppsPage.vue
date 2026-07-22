@@ -1,16 +1,17 @@
 <template>
   <section class="card-page">
-    <div class="header">
-      <div>
+    <header class="page-header">
+      <div class="page-header-main">
+        <p class="eyebrow">应用</p>
         <h1>插件市场</h1>
-        <p>支持安装、升级、启停，并可筛选基础插件作为组织创建基座。</p>
+        <p class="lede">支持安装、升级、启停，并可筛选基础插件作为组织创建基座。</p>
       </div>
-      <div class="header-actions">
+      <div class="page-header-actions">
         <el-switch v-model="foundationOnly" active-text="仅看基础插件" />
         <el-button :loading="busyGlobal" @click="refreshMarket">刷新市场</el-button>
         <el-button type="primary" :loading="busyGlobal" @click="checkAllUpdates">检查全部更新</el-button>
       </div>
-    </div>
+    </header>
 
     <el-alert v-if="message" :title="message" type="info" :closable="false" show-icon />
 
@@ -276,88 +277,4 @@ export default defineComponent({
 });
 </script>
 
-<style scoped>
-.card-page {
-  padding: 16px;
-}
-
-.header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-}
-
-.header-actions {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-
-.market-grid {
-  margin-top: 14px;
-}
-
-.plugin-card {
-  min-height: 290px;
-  margin-bottom: 12px;
-}
-
-.plugin-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: center;
-}
-
-.plugin-head h3 {
-  margin: 0;
-}
-
-.plugin-head p {
-  margin: 4px 0 0;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.desc {
-  color: #475569;
-  min-height: 40px;
-}
-
-.meta {
-  display: grid;
-  gap: 4px;
-  font-size: 12px;
-  color: #64748b;
-}
-
-.state-row {
-  margin-top: 8px;
-  display: flex;
-  gap: 8px;
-}
-
-.actions {
-  margin-top: 10px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.reason {
-  margin: 10px 0 0;
-  font-size: 12px;
-  color: #64748b;
-}
-
-@media (max-width: 900px) {
-  .header {
-    flex-direction: column;
-  }
-
-  .header-actions {
-    flex-wrap: wrap;
-  }
-}
-</style>
+<style scoped src="../styles/pages/apps.css"></style>

@@ -11,6 +11,7 @@
     "build": "electron-forge make",
     "plugin:package:weibo": "node scripts/plugins/build-weibo-package.mjs",
     "p2p:lab": "esbuild scripts/p2p-lab.mts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/electron-stub.mjs --outfile=node_modules/.cache/p2p-lab.mjs && node node_modules/.cache/p2p-lab.mjs",
+    "vectors:extract": "esbuild scripts/extract-vectors.mts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/electron-stub.mjs --outfile=node_modules/.cache/extract-vectors.mjs && node node_modules/.cache/extract-vectors.mjs",
     "test": "vitest",
     "test:unit": "vitest run"
   },
@@ -18,6 +19,8 @@
   "license": "MIT",
   "dependencies": {
     "@chainsafe/libp2p-noise": "^17.0.0",
+    "@chainsafe/libp2p-yamux": "^8.0.1",
+    "@element-plus/icons-vue": "^2.3.2",
     "@libp2p/autonat": "^3.0.24",
     "@libp2p/circuit-relay-v2": "^4.2.9",
     "@libp2p/dcutr": "^3.0.24",

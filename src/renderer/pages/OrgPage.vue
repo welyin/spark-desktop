@@ -1,29 +1,21 @@
 <template>
   <section class="org-page">
-    <el-card shadow="never" class="hero-card">
-      <div class="hero-inner">
-        <div>
-          <p class="eyebrow">组织管理</p>
-          <h1>组织</h1>
-          <p class="lede">创建组织后你会默认成为管理员。邀请成员先预录入 RootID，再把邀请码发给对方。</p>
-        </div>
-        <div class="hero-side">
-          <el-row :gutter="12" class="hero-stats">
-            <el-col :span="12">
-              <el-statistic title="我所属的组织" :value="organizations.length" />
-            </el-col>
-            <el-col :span="12">
-              <el-statistic title="我担任管理员" :value="adminOrgCount" />
-            </el-col>
-          </el-row>
-          <div class="hero-actions">
-            <el-button type="primary" @click="openCreateDialog">创建组织</el-button>
-            <el-button @click="openJoinDialog">邀请码加入</el-button>
-            <el-button text type="primary" @click="refreshOrganizations">刷新</el-button>
-          </div>
+    <header class="page-header">
+      <div class="page-header-main">
+        <p class="eyebrow">组织管理</p>
+        <h1>组织</h1>
+        <p class="lede">创建组织后你会默认成为管理员。邀请成员先预录入 RootID，再把邀请码发给对方。</p>
+        <div class="header-stats">
+          <span class="stat-chip">我所属的组织 <b>{{ organizations.length }}</b></span>
+          <span class="stat-chip">我担任管理员 <b>{{ adminOrgCount }}</b></span>
         </div>
       </div>
-    </el-card>
+      <div class="page-header-actions">
+        <el-button type="primary" @click="openCreateDialog">创建组织</el-button>
+        <el-button @click="openJoinDialog">邀请码加入</el-button>
+        <el-button text type="primary" @click="refreshOrganizations">刷新</el-button>
+      </div>
+    </header>
 
     <el-card shadow="never" class="panel-card">
       <template #header>
@@ -923,203 +915,4 @@ export default defineComponent({
 });
 </script>
 
-<style scoped>
-.org-page {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.purge-tip {
-  margin-top: 12px;
-}
-
-.purge-tip:first-child {
-  margin-top: 0;
-}
-
-.purge-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 4px;
-}
-
-.purge-preview {
-  margin-top: 12px;
-}
-
-.hero-card,
-.panel-card {
-  border-radius: 14px;
-}
-
-.hero-inner {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.hero-side {
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  align-items: flex-end;
-  gap: 12px;
-}
-
-.hero-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.eyebrow {
-  margin: 0 0 6px;
-  color: #0f766e;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-h1,
-h2,
-h3,
-h4 {
-  margin: 0;
-}
-
-.lede {
-  margin: 8px 0 0;
-  color: #64748b;
-}
-
-.hero-stats {
-  min-width: 260px;
-}
-
-.hint {
-  margin: 4px 0 0;
-  color: #64748b;
-  font-size: 13px;
-}
-
-.org-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
-}
-
-.org-item {
-  cursor: pointer;
-  border: 1px solid var(--el-border-color);
-}
-
-.org-item:hover {
-  border-color: var(--el-color-primary);
-}
-
-.org-item-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
-}
-
-.org-desc {
-  margin: 8px 0;
-  color: #64748b;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.org-meta {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  color: #475569;
-  font-size: 13px;
-}
-
-.org-item-actions {
-  margin-top: 8px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-}
-
-.org-plugin-domain {
-  color: #94a3b8;
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.invite-advanced {
-  margin-bottom: 8px;
-}
-
-.invite-result {
-  margin-top: 12px;
-}
-
-.drawer-body {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.drawer-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.replica-row {
-  margin-top: 12px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.replica-hint {
-  color: #64748b;
-  font-size: 13px;
-}
-
-.section-title {
-  margin: 18px 0 12px;
-}
-
-.drawer-actions {
-  margin-top: 16px;
-  display: flex;
-  gap: 8px;
-}
-
-.drawer-alert {
-  margin-top: 16px;
-}
-
-@media (max-width: 900px) {
-  .hero-inner {
-    flex-direction: column;
-  }
-
-  .hero-side {
-    align-items: stretch;
-  }
-
-  .hero-stats {
-    min-width: 100%;
-  }
-
-  .hero-actions {
-    justify-content: flex-end;
-  }
-}
-</style>
+<style scoped src="../styles/pages/org.css"></style>
